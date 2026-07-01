@@ -13,6 +13,7 @@ from omegaconf import DictConfig, OmegaConf
 from sklearn import preprocessing
 from torchvision.transforms import v2 as transforms
 import stable_worldmodel as swm
+import hdf5plugin
 
 def img_transform(cfg):
     transform = transforms.Compose(
