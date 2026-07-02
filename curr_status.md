@@ -1,6 +1,6 @@
-# LeWM 远程环境当前状态
+﻿# LeWM 远程环境当前状态
 
-本文档只记录当前可用状态和下一步实验入口，不记录账号密码。
+本文档记录当前可用状态、已经完成的修复/实验，以及下一步计划。不记录账号密码。
 
 ## 目录
 
@@ -11,14 +11,14 @@
   - [PyTorch 与 CUDA](#torch-cuda)
   - [环境变量](#env-vars)
   - [当前数据状态](#data-state)
-  - [当前已经完成的事项](#done-items)
+  - [Checkpoint 状态](#checkpoint-state)
   - [实验记录与归档](#archive)
-  - [本次复现实验的关键改进](#improvements)
+  - [已经完成的事项](#done-items)
+  - [关键修复](#fixes)
 - [第二部分 未来计划](#part-2)
-  - [先做数据与环境冒烟测试](#smoke-test)
-  - [准备作者 checkpoint](#checkpoint)
-  - [跑 checkpoint 小规模评估](#small-eval)
-  - [跑 1 epoch 训练冒烟测试](#train-smoke)
+  - [PushT 参数对比实验](#pusht-sweep)
+  - [TwoRoom 复现实验](#tworoom)
+  - [训练冒烟测试](#train-smoke)
 
 <a id="part-1"></a>
 ## 第一部分 当前状态
@@ -62,6 +62,12 @@ LeWM 数据、checkpoint 和缓存目录：
 /data/zflin/lewm_re/stablewm_data
 ```
 
+实验归档目录已经移到仓库外：
+
+```text
+/data/zflin/lewm_re/experiments
+```
+
 当前推荐工作目录：
 
 ```bash
@@ -74,6 +80,7 @@ cd /data/zflin/lewm_re/le-wm
 - 当前所有 LeWM 相关内容统一放在 `/data/zflin` 下。
 - PushT 和 TwoRoom 已下载并解压完成。
 - Cube/Reacher 暂不下载。
+- `experiments/` 不再放在 `le-wm` 仓库内部，避免同步 GitHub 时混入实验产物。
 
 <a id="python-conda"></a>
 ### 3. Python 与 Conda 环境
@@ -141,19 +148,10 @@ CUDA 设备：
 7 NVIDIA GeForce RTX 3090
 ```
 
-CUDA 检查命令：
+单卡运行方式：
 
 ```bash
-python - <<'PY'
-import torch
-print("torch:", torch.__version__)
-print("cuda:", torch.cuda.is_available())
-print("cuda version:", torch.version.cuda)
-print("device count:", torch.cuda.device_count())
-if torch.cuda.is_available():
-    for i in range(torch.cuda.device_count()):
-        print(i, torch.cuda.get_device_name(i))
-PY
+CUDA_VISIBLE_DEVICES=3 python eval.py --config-name=pusht.yaml policy=pusht/lewm
 ```
 
 <a id="env-vars"></a>
@@ -180,14 +178,15 @@ export HF_ENDPOINT=https://hf-mirror.com
 cd /data/zflin/lewm_re/le-wm
 ```
 
+如果需要强制离线检查，可临时设置：
+
+```bash
+export HF_HUB_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
+```
+
 <a id="data-state"></a>
 ### 6. 当前数据状态
-
-数据根目录：
-
-```text
-$STABLEWM_HOME
-```
 
 已解压完成的数据：
 
@@ -196,22 +195,10 @@ $STABLEWM_HOME/datasets/pusht_expert_train.h5
 $STABLEWM_HOME/datasets/tworoom.h5
 ```
 
-保留的下载压缩包目录：
-
-```text
-$STABLEWM_HOME/downloads/lewm-pusht
-$STABLEWM_HOME/downloads/lewm-tworooms
-```
-
-PushT 下载源文件：
+保留的下载压缩包：
 
 ```text
 $STABLEWM_HOME/downloads/lewm-pusht/pusht_expert_train.h5.zst
-```
-
-TwoRoom 下载源文件：
-
-```text
 $STABLEWM_HOME/downloads/lewm-tworooms/tworoom.tar.zst
 ```
 
@@ -229,29 +216,55 @@ ls -lh "$STABLEWM_HOME/datasets/pusht_expert_train.h5" "$STABLEWM_HOME/datasets/
 du -sh "$STABLEWM_HOME"/downloads/* 2>/dev/null
 df -h /data
 ```
+
+<a id="checkpoint-state"></a>
+### 7. Checkpoint 状态
+
+PushT 作者 checkpoint 已下载并转换成功。当前可被 `policy=pusht/lewm` 加载的本地缓存为：
+
+```text
+$STABLEWM_HOME/checkpoints/models--pusht--lewm/weights.pt
+$STABLEWM_HOME/checkpoints/models--pusht--lewm/config.json
+```
+
+原始 HF 下载目录：
+
+```text
+$STABLEWM_HOME/hf_pusht
+```
+
+转换命令：
+
+```bash
+python scripts/convert_hf_checkpoint.py --repo hf_pusht --run-name pusht/lewm
+```
+
+说明：
+
+- 当前 `load_pretrained` / `AutoCostModel('pusht/lewm')` 走的是 `$STABLEWM_HOME/checkpoints/models--pusht--lewm/*.pt` 这类缓存布局。
+- 之前的 `$STABLEWM_HOME/pusht/lewm_object.ckpt` 格式不再作为主要加载目标。
+- 转换脚本现在输出纯 `state_dict`，避免 PyTorch `weights_only` 反序列化报错。
+
 <a id="archive"></a>
-### 7. 实验记录与归档
+### 8. 实验记录与归档
 
-建议每次实验单独放进：
-
-```text
-experiments/YYYY-MM-DD_task_stage/
-```
-
-例如：
+实验统一放在仓库外：
 
 ```text
-experiments/2026-07-01_pusht_random/
+/data/zflin/lewm_re/experiments/<experiment_name>/
 ```
 
-目录里可以放：
+推荐目录内容：
 
-- `README.md`
-- `command.txt`
-- `config.yaml`
-- `results.txt`
-- `notes.md`
-- `artifacts/`
+```text
+README.md
+command.txt
+config.yaml
+results.txt
+notes.md
+artifacts/
+hydra_outputs/
+```
 
 自动归档通式：
 
@@ -259,189 +272,158 @@ experiments/2026-07-01_pusht_random/
 bash scripts/archive_experiment.sh <experiment_name> "<command>"
 ```
 
-当前脚本会自动做这些事：
+当前归档脚本会自动处理：
 
-- 创建 `experiments/<experiment_name>/`
-- 写入 `README.md`
-- 写入 `command.txt`
-- 把根目录下的 `pusht_results.txt` 或 `tworoom_results.txt` 移进去
-- 把根目录下的 `*.mp4` 移到 `artifacts/`
-- 复制对应的 `config/eval/*.yaml` 到 `config.yaml`
+- 创建 `/data/zflin/lewm_re/experiments/<experiment_name>/`
+- 写入 `README.md` 和 `command.txt`
+- 移动 `pusht_results.txt` 或 `tworoom_results.txt`
+- 移动仓库根目录下的 `*.mp4`
+- 移动 `$STABLEWM_HOME/pusht/` 或 `$STABLEWM_HOME/tworoom/` 下的 `*.mp4`
+- 复制对应 `config/eval/*.yaml` 到 `config.yaml`
+- 移动 Hydra 的 `outputs/` 到 `hydra_outputs/`
 
-归档后，根目录不应再保留这次实验的：
+Hydra 输出目录说明：
 
-- `pusht_results.txt`
-- `tworoom_results.txt`
-- `env_*.mp4`
+```text
+outputs/YYYY-MM-DD/HH-MM-SS/
+```
 
+这些目录一般记录 `.hydra/config.yaml`、`.hydra/hydra.yaml`、`.hydra/overrides.yaml`，对复现实验有用，归档时应保留。
 
 <a id="done-items"></a>
-### 8. 当前已经完成的事项
+### 9. 已经完成的事项
 
-- LeWM GitHub 仓库已 clone。
+- LeWM GitHub 仓库已 clone 到远程服务器。
 - 代码、数据目录和 conda 环境已迁移到 `/data/zflin`。
 - `lewm` conda 环境已可用。
 - PyTorch 已匹配服务器 CUDA 12.8，CUDA 可用。
 - `stable_worldmodel` 和 `stable_pretraining` 已可导入。
-- PushT 数据已解压并放入 `$STABLEWM_HOME/datasets/pusht_expert_train.h5`。
-- TwoRoom 数据已解压并放入 `$STABLEWM_HOME/datasets/tworoom.h5`。
-- PushT 和 TwoRoom 的压缩包暂时保留，未删除。
-- `hdf5plugin` 已纳入当前可用环境，用于读取压缩 HDF5 数据。
-- HDF5 数据集的可用路径约定为 `$STABLEWM_HOME/datasets/*.h5`。
+- PushT 数据已放入 `$STABLEWM_HOME/datasets/pusht_expert_train.h5`。
+- TwoRoom 数据已放入 `$STABLEWM_HOME/datasets/tworoom.h5`。
+- `hdf5plugin` 已安装，用于读取压缩 HDF5 数据。
 - `eval.py` 已改为使用新版 `stable_worldmodel.data.load_dataset()`。
-- 已确认可用的单卡/多卡选择方式是 `CUDA_VISIBLE_DEVICES=...`。
-- 仓库内新增了 `experiments/` 目录，用来统一存放每次实验的记录和产物。
-- 仓库内新增了 `scripts/archive_experiment.sh`，可以一键把实验命令、结果和视频移动归档到 `experiments/<name>/`。
+- PushT HF checkpoint 已转换为 loader 期望的缓存格式。
+- PushT checkpoint 小规模评估已跑通。
+- PushT 默认正式评估已跑完，并准备归档。
+- `experiments/` 已迁移到 `le-wm` 仓库外层。
+- `archive_experiment.sh` 已更新，会归档结果、视频和 Hydra outputs。
 
+已确认 PushT 小规模评估结果：
 
-<a id="improvements"></a>
-### 9. 本次复现实验的关键改进
+```text
+command: CUDA_VISIBLE_DEVICES=3 python eval.py --config-name=pusht.yaml policy=pusht/lewm eval.num_eval=2 solver.num_samples=50 solver.n_steps=5
+success_rate: 50.0
+episode_successes: [False, True]
+```
 
-#### 9.1 HDF5 数据读取
+<a id="fixes"></a>
+### 10. 关键修复
 
-当前 `stable_worldmodel` 版本不再暴露旧的 `HDF5Dataset` 类，评估脚本需要使用新版
-`swm.data.load_dataset()`。
+#### 10.1 HDF5 数据读取
 
-同时，读取压缩 HDF5 时需要确保环境里有：
+当前 `stable_worldmodel` 版本不再暴露旧的 `HDF5Dataset` 类，评估脚本需要使用新版：
+
+```python
+swm.data.load_dataset(...)
+```
+
+同时读取压缩 HDF5 时需要：
 
 ```bash
 pip install hdf5plugin
 ```
 
-#### 9.2 数据放置约定
+#### 10.2 HF checkpoint 转换
 
-当前可用约定是把 HDF5 数据放到：
+`config.json` 是 Hydra 风格配置，包含 `_target_`，不能直接写：
+
+```python
+ARPredictor(**cfg["predictor"])
+```
+
+现在用：
+
+```python
+from hydra.utils import instantiate
+model = instantiate(cfg)
+```
+
+#### 10.3 ViT 权重命名重写
+
+转换脚本会处理 HF 权重和当前 LeWM 模型之间的命名差异，例如：
 
 ```text
-$STABLEWM_HOME/datasets/
+encoder.encoder.layer. -> encoder.layers.
+attention.attention.query -> attention.q_proj
+attention.attention.key -> attention.k_proj
+attention.attention.value -> attention.v_proj
+attention.output.dense -> attention.o_proj
+intermediate.dense -> mlp.fc1
+output.dense -> mlp.fc2
 ```
 
-例如：
+#### 10.4 PyTorch weights_only 报错
 
-```text
-$STABLEWM_HOME/datasets/pusht_expert_train.h5
-$STABLEWM_HOME/datasets/tworoom.h5
+之前保存整个模型对象会触发 `pickle.UnpicklingError` / `weights_only` 问题。当前脚本保存纯 `state_dict`：
+
+```python
+torch.save(sd, out)
 ```
-
-#### 9.3 选卡方式
-
-单卡运行：
-
-```bash
-CUDA_VISIBLE_DEVICES=3 python eval.py --config-name=pusht.yaml policy=random eval.num_eval=2
-```
-
-训练时配合单卡参数更稳：
-
-```bash
-CUDA_VISIBLE_DEVICES=3 python train.py data=pusht trainer.devices=1
-```
-
-#### 9.4 当前推荐的验证顺序
-
-1. 检查 `hdf5plugin` 是否安装。
-2. 确认 `.h5` 在 `$STABLEWM_HOME/datasets/`。
-3. 用 `CUDA_VISIBLE_DEVICES` 固定一张空闲卡。
-4. 先跑 `policy=random` 的小规模评估。
-5. 再跑 checkpoint 的小规模评估。
-6. 最后再做 1 epoch 训练冒烟测试。
 
 <a id="part-2"></a>
 ## 第二部分 未来计划
 
-<a id="smoke-test"></a>
-### 10.1 先做数据与环境冒烟测试
+<a id="pusht-sweep"></a>
+### 11.1 PushT 参数对比实验
 
-先跑 PushT random policy 小评估：
-
-```bash
-python eval.py --config-name=pusht.yaml policy=random eval.num_eval=2
-```
-
-这一步不需要 LeWM checkpoint，主要检查：
-
-- `eval.py` 能否启动。
-- `stable_worldmodel` 环境能否创建。
-- `$STABLEWM_HOME/datasets/pusht_expert_train.h5` 能否被读取。
-- evaluation pipeline 能否完整跑完并写结果。
-
-如果 PushT random 通过，再跑 TwoRoom random：
+以默认评估作为 baseline：
 
 ```bash
-python eval.py --config-name=tworoom.yaml policy=random eval.num_eval=2
+CUDA_VISIBLE_DEVICES=3 python eval.py --config-name=pusht.yaml policy=pusht/lewm
 ```
 
-<a id="checkpoint"></a>
-### 10.2 准备作者 checkpoint
-
-如果要复现 LeWM planning，需要对应 checkpoint。
-
-PushT 评估需要：
+默认参数等价于：
 
 ```text
-$STABLEWM_HOME/pusht/lewm_object.ckpt
+eval.num_eval=50
+solver.num_samples=300
+solver.n_steps=30
+solver.topk=30
 ```
 
-TwoRoom 评估需要：
-
-```text
-$STABLEWM_HOME/tworoom/lewm_object.ckpt
-```
-
-评估命令中的 `policy` 不写 `_object.ckpt` 后缀。
-
-正确：
+接下来主要固定其他参数，只改变 `solver.n_steps` 做对比：
 
 ```bash
-python eval.py --config-name=pusht.yaml policy=pusht/lewm
+CUDA_VISIBLE_DEVICES=3 python eval.py --config-name=pusht.yaml policy=pusht/lewm solver.n_steps=5
+CUDA_VISIBLE_DEVICES=3 python eval.py --config-name=pusht.yaml policy=pusht/lewm solver.n_steps=10
+CUDA_VISIBLE_DEVICES=3 python eval.py --config-name=pusht.yaml policy=pusht/lewm solver.n_steps=20
+CUDA_VISIBLE_DEVICES=3 python eval.py --config-name=pusht.yaml policy=pusht/lewm solver.n_steps=40
 ```
 
-错误：
+每次跑完立刻归档，例如：
 
 ```bash
-python eval.py --config-name=pusht.yaml policy=pusht/lewm_object.ckpt
+bash scripts/archive_experiment.sh 2026-07-02_pusht_lewm_nsteps10 "CUDA_VISIBLE_DEVICES=3 python eval.py --config-name=pusht.yaml policy=pusht/lewm solver.n_steps=10"
 ```
 
-<a id="small-eval"></a>
-### 10.3 跑 checkpoint 小规模评估
+<a id="tworoom"></a>
+### 11.2 TwoRoom 复现实验
 
-PushT 小规模调试：
+TwoRoom 数据已经准备好。下一步需要下载并转换 TwoRoom 作者 checkpoint，然后跑：
 
 ```bash
-python eval.py --config-name=pusht.yaml policy=pusht/lewm eval.num_eval=2 solver.num_samples=50 solver.n_steps=5
+CUDA_VISIBLE_DEVICES=3 python eval.py --config-name=tworoom.yaml policy=tworoom/lewm eval.num_eval=2 solver.num_samples=50 solver.n_steps=5
 ```
 
-TwoRoom 小规模调试：
-
-```bash
-python eval.py --config-name=tworoom.yaml policy=tworoom/lewm eval.num_eval=2 solver.num_samples=50 solver.n_steps=5
-```
-
-确认无误后再跑默认评估：
-
-```bash
-python eval.py --config-name=pusht.yaml policy=pusht/lewm
-python eval.py --config-name=tworoom.yaml policy=tworoom/lewm
-```
+小规模通过后再跑默认评估。
 
 <a id="train-smoke"></a>
-### 10.4 跑 1 epoch 训练冒烟测试
+### 11.3 训练冒烟测试
 
-评估链路通了以后，再测训练链路：
-
-```bash
-python train.py data=pusht trainer.max_epochs=1 loader.batch_size=16
-```
-
-TwoRoom 训练冒烟测试：
+评估链路稳定后，再测训练链路：
 
 ```bash
-python train.py data=tworoom trainer.max_epochs=1 loader.batch_size=16
+CUDA_VISIBLE_DEVICES=3 python train.py data=pusht trainer.devices=1 trainer.max_epochs=1 loader.batch_size=16
 ```
 
-如果成功，再考虑默认训练：
-
-```bash
-python train.py data=pusht
-python train.py data=tworoom
-```
+如果成功，再考虑默认训练或 frozen backbone 下游实验。
