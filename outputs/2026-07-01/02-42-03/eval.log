@@ -1,3 +1,0 @@
-[2026-07-01 02:42:04,638][matplotlib.font_manager][INFO] - Failed to extract font properties from /usr/share/fonts/truetype/noto/NotoColorEmoji.ttf: Can not load face (unknown file format; error code 0x2)
-[2026-07-01 02:42:04,723][matplotlib.font_manager][INFO] - generated new fontManager
-[2026-07-01 02:42:05,895][datasets][INFO] - JAX version 0.6.2 available.
