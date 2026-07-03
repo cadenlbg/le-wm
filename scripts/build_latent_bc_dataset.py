@@ -69,25 +69,23 @@ def _transform_images(transform, images):
     return torch.stack([transform(img) for img in images], dim=0)
 
 
-def _progress(iterable, **kwargs):
-    if tqdm is None:
-        return iterable
-    return tqdm(iterable, **kwargs)
-
-
 @torch.no_grad()
 def _encode_indices(model, dataset, transform, indices, batch_size, device, desc):
     chunks = []
     model.eval()
     starts = range(0, len(indices), batch_size)
-    total = (len(indices) + batch_size - 1) // batch_size
-    for start in _progress(starts, desc=desc, total=total, unit="batch"):
+    progress = tqdm(total=len(indices), desc=desc, unit="sample") if tqdm is not None else None
+    for start in starts:
         batch_indices = indices[start : start + batch_size]
         rows = dataset.get_row_data(batch_indices)
         batch = _transform_images(transform, rows["pixels"])
         batch = batch.unsqueeze(1).to(device)
         output = model.encode({"pixels": batch})
         chunks.append(output["emb"][:, -1].detach().cpu())
+        if progress is not None:
+            progress.update(len(batch_indices))
+    if progress is not None:
+        progress.close()
     return torch.cat(chunks, dim=0)
 
 
