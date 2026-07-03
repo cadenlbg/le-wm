@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -7,11 +8,44 @@ import hydra
 import numpy as np
 import stable_worldmodel as swm
 import torch
-from hydra.utils import to_absolute_path
 from omegaconf import DictConfig, OmegaConf
 from sklearn import preprocessing
 
 from eval import get_dataset, get_episodes_length, img_transform
+
+
+def _experiments_root():
+    if os.environ.get("LEWM_EXPERIMENTS_DIR"):
+        return Path(os.environ["LEWM_EXPERIMENTS_DIR"])
+    if os.environ.get("STABLEWM_HOME"):
+        return Path(os.environ["STABLEWM_HOME"]).expanduser().resolve().parent / "experiments"
+    return Path("/data/zflin/lewm_re/experiments")
+
+
+def _resolve_experiment_path(path):
+    path = Path(path).expanduser()
+    if path.is_absolute():
+        return path
+    parts = path.parts
+    if parts and parts[0] == "experiments":
+        path = Path(*parts[1:])
+    return _experiments_root() / path
+
+
+def _set_default_hydra_dir(job_name):
+    if any(arg.startswith("hydra.run.dir=") for arg in sys.argv[1:]):
+        return
+    run_dir = _experiments_root() / "hydra" / job_name
+    sys.argv.append(f"hydra.run.dir={run_dir}/${{now:%Y-%m-%d}}/${{now:%H-%M-%S}}")
+
+
+def _allow_new_hydra_overrides(keys):
+    prefixes = tuple(f"{key}=" for key in keys)
+    for idx, arg in enumerate(sys.argv[1:], start=1):
+        if arg.startswith("+") or arg.startswith("++"):
+            continue
+        if arg.startswith(prefixes):
+            sys.argv[idx] = f"+{arg}"
 
 
 def _episode_column(dataset):
@@ -81,10 +115,8 @@ def _resolve_model_policy(cfg):
 
 @hydra.main(version_base=None, config_path="../config/eval", config_name="pusht")
 def run(cfg: DictConfig):
-    output = Path(
-        to_absolute_path(
-            cfg.get("output_dataset", "experiments/latent_bc_datasets/pusht_g25_k5.pt")
-        )
+    output = _resolve_experiment_path(
+        cfg.get("output_dataset", "latent_bc_datasets/pusht_g25_k5.pt")
     )
     max_samples = cfg.get("max_samples", None)
     batch_size = int(cfg.get("encode_batch_size", 128))
@@ -147,4 +179,8 @@ def run(cfg: DictConfig):
 
 
 if __name__ == "__main__":
+    _allow_new_hydra_overrides(
+        ("max_samples", "encode_batch_size", "output_dataset", "lewm_policy", "device")
+    )
+    _set_default_hydra_dir("build_latent_bc_dataset")
     run()

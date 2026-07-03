@@ -2,6 +2,7 @@ import os
 
 os.environ["MUJOCO_GL"] = "egl"
 
+import sys
 import time
 from pathlib import Path
 
@@ -9,11 +10,44 @@ import hydra
 import numpy as np
 import stable_worldmodel as swm
 import torch
-from hydra.utils import to_absolute_path
 from omegaconf import DictConfig, OmegaConf
 
 from eval import get_dataset, get_episodes_length, img_transform
 from latent_bc import LatentBCWorldPolicy, LatentGoalBCPolicy
+
+
+def _experiments_root():
+    if os.environ.get("LEWM_EXPERIMENTS_DIR"):
+        return Path(os.environ["LEWM_EXPERIMENTS_DIR"])
+    if os.environ.get("STABLEWM_HOME"):
+        return Path(os.environ["STABLEWM_HOME"]).expanduser().resolve().parent / "experiments"
+    return Path("/data/zflin/lewm_re/experiments")
+
+
+def _resolve_experiment_path(path):
+    path = Path(path).expanduser()
+    if path.is_absolute():
+        return path
+    parts = path.parts
+    if parts and parts[0] == "experiments":
+        path = Path(*parts[1:])
+    return _experiments_root() / path
+
+
+def _set_default_hydra_dir(job_name):
+    if any(arg.startswith("hydra.run.dir=") for arg in sys.argv[1:]):
+        return
+    run_dir = _experiments_root() / "hydra" / job_name
+    sys.argv.append(f"hydra.run.dir={run_dir}/${{now:%Y-%m-%d}}/${{now:%H-%M-%S}}")
+
+
+def _allow_new_hydra_overrides(keys):
+    prefixes = tuple(f"{key}=" for key in keys)
+    for idx, arg in enumerate(sys.argv[1:], start=1):
+        if arg.startswith("+") or arg.startswith("++"):
+            continue
+        if arg.startswith(prefixes):
+            sys.argv[idx] = f"+{arg}"
 
 
 def _episode_column(dataset):
@@ -41,8 +75,8 @@ def _resolve_model_policy(cfg, metadata):
 def run(cfg: DictConfig):
     policy_ckpt = cfg.get("policy_ckpt")
     if policy_ckpt is None:
-        raise ValueError("Set policy_ckpt=experiments/.../policy.pt")
-    policy_ckpt = Path(to_absolute_path(policy_ckpt))
+        raise ValueError("Set policy_ckpt=YYYY-MM-DD_pusht_latent_bc/policy.pt")
+    policy_ckpt = _resolve_experiment_path(policy_ckpt)
 
     device = cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu")
     cfg.world.max_episode_steps = 2 * cfg.eval.eval_budget
@@ -127,4 +161,6 @@ def run(cfg: DictConfig):
 
 
 if __name__ == "__main__":
+    _allow_new_hydra_overrides(("policy_ckpt", "lewm_policy", "device"))
+    _set_default_hydra_dir("eval_latent_bc")
     run()

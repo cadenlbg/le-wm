@@ -134,7 +134,7 @@ scripts/build_latent_bc_dataset.py
 3. 使用和 `eval.py` 一致的图像 transform。
 4. 对合法 index 编码 `o_t` 和 `o_{t+G}`，得到 `z_t` 和 `z_g`。
 5. 提取专家动作片段 `a_{t:t+K}`。
-6. 把紧凑 tensor 数据集保存到 `experiments/latent_bc_datasets/`。
+6. 把紧凑 tensor 数据集保存到仓库外的 `/data/zflin/lewm_re/experiments/latent_bc_datasets/`。
 
 默认 checkpoint 使用当前已准备好的：
 
@@ -207,12 +207,18 @@ train_latent_bc.py
 experiments/YYYY-MM-DD_pusht_latent_bc/
 ```
 
+实际默认位置在仓库外：
+
+```text
+/data/zflin/lewm_re/experiments/YYYY-MM-DD_pusht_latent_bc/
+```
+
 最小命令形式：
 
 ```text
 python train_latent_bc.py \
-  dataset=experiments/latent_bc_datasets/pusht_g25_k5.pt \
-  output=experiments/YYYY-MM-DD_pusht_latent_bc
+  dataset=latent_bc_datasets/pusht_g25_k5.pt \
+  output=YYYY-MM-DD_pusht_latent_bc
 ```
 
 ### 4.4 评估 policy
@@ -380,7 +386,7 @@ experiments/YYYY-MM-DD_pusht_cem_reference/
 生成：
 
 ```text
-experiments/latent_bc_datasets/pusht_g25_k5.pt
+/data/zflin/lewm_re/experiments/latent_bc_datasets/pusht_g25_k5.pt
 ```
 
 验证：
@@ -404,7 +410,7 @@ experiments/latent_bc_datasets/pusht_g25_k5.pt
 运行：
 
 ```text
-python eval_latent_bc.py --config-name=pusht.yaml policy_ckpt=experiments/YYYY-MM-DD_pusht_latent_bc/policy.pt
+python eval_latent_bc.py --config-name=pusht.yaml policy_ckpt=YYYY-MM-DD_pusht_latent_bc/policy.pt
 ```
 
 记录：
@@ -419,7 +425,7 @@ python eval_latent_bc.py --config-name=pusht.yaml policy_ckpt=experiments/YYYY-M
 生成：
 
 ```text
-experiments/YYYY-MM-DD_pusht_latent_bc/comparison.md
+/data/zflin/lewm_re/experiments/YYYY-MM-DD_pusht_latent_bc/comparison.md
 ```
 
 包含：

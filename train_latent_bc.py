@@ -1,15 +1,41 @@
 from datetime import date
 import json
+import os
 from pathlib import Path
+import sys
 
 import hydra
 import torch
-from hydra.utils import to_absolute_path
 import torch.nn.functional as F
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader, Dataset, Subset
 
 from latent_bc import LatentGoalBCPolicy
+
+
+def _experiments_root():
+    if os.environ.get("LEWM_EXPERIMENTS_DIR"):
+        return Path(os.environ["LEWM_EXPERIMENTS_DIR"])
+    if os.environ.get("STABLEWM_HOME"):
+        return Path(os.environ["STABLEWM_HOME"]).expanduser().resolve().parent / "experiments"
+    return Path("/data/zflin/lewm_re/experiments")
+
+
+def _resolve_experiment_path(path):
+    path = Path(path).expanduser()
+    if path.is_absolute():
+        return path
+    parts = path.parts
+    if parts and parts[0] == "experiments":
+        path = Path(*parts[1:])
+    return _experiments_root() / path
+
+
+def _set_default_hydra_dir(job_name):
+    if any(arg.startswith("hydra.run.dir=") for arg in sys.argv[1:]):
+        return
+    run_dir = _experiments_root() / "hydra" / job_name
+    sys.argv.append(f"hydra.run.dir={run_dir}/${{now:%Y-%m-%d}}/${{now:%H-%M-%S}}")
 
 
 class LatentBCDataset(Dataset):
@@ -86,8 +112,8 @@ def _run_epoch(model, loader, optimizer, device, cfg, train):
 def run(cfg: DictConfig):
     defaults = OmegaConf.create(
         {
-            "dataset": "experiments/latent_bc_datasets/pusht_g25_k5.pt",
-            "output": f"experiments/{date.today().isoformat()}_pusht_latent_bc",
+            "dataset": "latent_bc_datasets/pusht_g25_k5.pt",
+            "output": f"{date.today().isoformat()}_pusht_latent_bc",
             "seed": 42,
             "train_split": 0.9,
             "device": "cuda",
@@ -102,7 +128,7 @@ def run(cfg: DictConfig):
 
     torch.manual_seed(cfg.seed)
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
-    dataset_path = Path(to_absolute_path(cfg.dataset))
+    dataset_path = _resolve_experiment_path(cfg.dataset)
     payload = torch.load(dataset_path, map_location="cpu", weights_only=False)
     dataset = LatentBCDataset(payload)
     metadata = payload["metadata"]
@@ -125,7 +151,7 @@ def run(cfg: DictConfig):
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), **cfg.optim)
 
-    output = Path(to_absolute_path(cfg.output))
+    output = _resolve_experiment_path(cfg.output)
     output.mkdir(parents=True, exist_ok=True)
     OmegaConf.save(cfg, output / "config.yaml")
     metrics_path = output / "metrics.jsonl"
@@ -163,4 +189,5 @@ def run(cfg: DictConfig):
 
 
 if __name__ == "__main__":
+    _set_default_hydra_dir("train_latent_bc")
     run()

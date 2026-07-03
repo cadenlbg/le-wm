@@ -13,6 +13,24 @@ export STABLEWM_HOME=/data/zflin/lewm_re/stablewm_data
 export HF_ENDPOINT=https://hf-mirror.com
 ```
 
+BC 相关运行产物默认不写入 `le-wm` 仓库。脚本会把相对实验路径解析到：
+
+```text
+/data/zflin/lewm_re/experiments
+```
+
+Hydra 日志默认写到：
+
+```text
+/data/zflin/lewm_re/experiments/hydra/<job_name>/YYYY-MM-DD/HH-MM-SS/
+```
+
+如果需要临时改实验根目录，可以设置：
+
+```bash
+export LEWM_EXPERIMENTS_DIR=/data/zflin/lewm_re/experiments
+```
+
 先确认环境里能正常导入这些包：
 
 ```bash
@@ -39,7 +57,7 @@ BC 脚本继续复用原始 `eval.py` 的 HDF5 数据加载逻辑，不要求切
 
 - `G = 25`
 - `K = 5`
-- 输出：`experiments/latent_bc_datasets/pusht_g25_k5.pt`
+- 输出：`/data/zflin/lewm_re/experiments/latent_bc_datasets/pusht_g25_k5.pt`
 
 运行命令：
 
@@ -83,7 +101,7 @@ python train_latent_bc.py
 如果要指定数据集和输出目录：
 
 ```bash
-python train_latent_bc.py dataset=experiments/latent_bc_datasets/pusht_g25_k5.pt output=experiments/2026-07-03_pusht_latent_bc
+python train_latent_bc.py dataset=latent_bc_datasets/pusht_g25_k5.pt output=2026-07-03_pusht_latent_bc
 ```
 
 训练产物：
@@ -103,19 +121,19 @@ python train_latent_bc.py dataset=experiments/latent_bc_datasets/pusht_g25_k5.pt
 运行命令：
 
 ```bash
-python eval_latent_bc.py policy_ckpt=experiments/2026-07-03_pusht_latent_bc/policy.pt
+python eval_latent_bc.py policy_ckpt=2026-07-03_pusht_latent_bc/policy.pt
 ```
 
 建议先跑小评估：
 
 ```bash
-python eval_latent_bc.py policy_ckpt=experiments/2026-07-03_pusht_latent_bc/policy.pt eval.num_eval=2
+python eval_latent_bc.py policy_ckpt=2026-07-03_pusht_latent_bc/policy.pt eval.num_eval=2
 ```
 
 `eval_latent_bc.py` 会优先使用 policy checkpoint metadata 里记录的 `model_policy`。如果需要手动覆盖：
 
 ```bash
-python eval_latent_bc.py policy_ckpt=experiments/2026-07-03_pusht_latent_bc/policy.pt lewm_policy=pusht/lewm eval.num_eval=2
+python eval_latent_bc.py policy_ckpt=2026-07-03_pusht_latent_bc/policy.pt lewm_policy=pusht/lewm eval.num_eval=2
 ```
 
 评估结果会写到 checkpoint 目录下，并打印：
@@ -135,7 +153,7 @@ python eval.py --config-name=pusht.yaml policy=pusht/lewm eval.num_eval=50
 然后跑 latent BC：
 
 ```bash
-python eval_latent_bc.py policy_ckpt=experiments/2026-07-03_pusht_latent_bc/policy.pt eval.num_eval=50
+python eval_latent_bc.py policy_ckpt=2026-07-03_pusht_latent_bc/policy.pt eval.num_eval=50
 ```
 
 对比重点：
