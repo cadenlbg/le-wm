@@ -11,6 +11,11 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 from sklearn import preprocessing
 
+try:
+    from tqdm.auto import tqdm
+except ImportError:
+    tqdm = None
+
 from eval import get_dataset, get_episodes_length, img_transform
 
 
@@ -64,12 +69,22 @@ def _transform_images(transform, images):
     return torch.stack([transform(img) for img in images], dim=0)
 
 
+def _progress(iterable, **kwargs):
+    if tqdm is None:
+        return iterable
+    return tqdm(iterable, **kwargs)
+
+
 @torch.no_grad()
-def _encode(model, transform, pixels, batch_size, device):
+def _encode_indices(model, dataset, transform, indices, batch_size, device, desc):
     chunks = []
     model.eval()
-    for start in range(0, len(pixels), batch_size):
-        batch = _transform_images(transform, pixels[start : start + batch_size])
+    starts = range(0, len(indices), batch_size)
+    total = (len(indices) + batch_size - 1) // batch_size
+    for start in _progress(starts, desc=desc, total=total, unit="batch"):
+        batch_indices = indices[start : start + batch_size]
+        rows = dataset.get_row_data(batch_indices)
+        batch = _transform_images(transform, rows["pixels"])
         batch = batch.unsqueeze(1).to(device)
         output = model.encode({"pixels": batch})
         chunks.append(output["emb"][:, -1].detach().cpu())
@@ -140,15 +155,20 @@ def run(cfg: DictConfig):
     model.eval().requires_grad_(False)
     model.interpolate_pos_encoding = True
 
-    rows = dataset.get_row_data(valid_indices)
-    goal_rows = dataset.get_row_data(valid_indices + goal_offset)
     col_name = _episode_column(dataset)
 
-    z_t = _encode(model, transform, rows["pixels"], batch_size, device)
-    z_g = _encode(model, transform, goal_rows["pixels"], batch_size, device)
+    z_t = _encode_indices(
+        model, dataset, transform, valid_indices, batch_size, device, "encoding z_t"
+    )
+    goal_indices = valid_indices + goal_offset
+    z_g = _encode_indices(
+        model, dataset, transform, goal_indices, batch_size, device, "encoding z_g"
+    )
     action_raw, action = _action_chunks(
         dataset, valid_indices, action_horizon, action_scaler
     )
+    episode_idx = dataset.get_col_data(col_name)
+    step_idx = dataset.get_col_data("step_idx")
 
     payload = {
         "z_t": z_t.float(),
@@ -156,9 +176,9 @@ def run(cfg: DictConfig):
         "delta_z": (z_g - z_t).float(),
         "action": torch.from_numpy(action),
         "action_raw": torch.from_numpy(action_raw),
-        "episode": torch.as_tensor(rows[col_name], dtype=torch.long),
-        "step": torch.as_tensor(rows["step_idx"], dtype=torch.long),
-        "goal_step": torch.as_tensor(goal_rows["step_idx"], dtype=torch.long),
+        "episode": torch.as_tensor(episode_idx[valid_indices], dtype=torch.long),
+        "step": torch.as_tensor(step_idx[valid_indices], dtype=torch.long),
+        "goal_step": torch.as_tensor(step_idx[goal_indices], dtype=torch.long),
         "metadata": {
             "config": OmegaConf.to_container(cfg, resolve=True),
             "dataset_name": cfg.eval.dataset_name,

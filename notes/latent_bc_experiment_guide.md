@@ -116,6 +116,33 @@ python train_latent_bc.py dataset=latent_bc_datasets/pusht_g25_k5.pt output=2026
 - val loss 稳定
 - `policy.pt` 可正常加载
 
+如果要训练 Transformer policy：
+
+```bash
+python train_latent_bc.py \
+  dataset=latent_bc_datasets/pusht_g25_k5.pt \
+  output=2026-07-03_pusht_latent_bc_transformer \
+  model.architecture=transformer \
+  model.hidden_dim=512 \
+  model.depth=4 \
+  model.num_heads=8 \
+  model.dropout=0.1 \
+  train.epochs=100
+```
+
+较小的 Transformer 版本：
+
+```bash
+python train_latent_bc.py \
+  dataset=latent_bc_datasets/pusht_g25_k5.pt \
+  output=2026-07-03_pusht_latent_bc_transformer_small \
+  model.architecture=transformer \
+  model.hidden_dim=256 \
+  model.depth=3 \
+  model.num_heads=4 \
+  train.epochs=100
+```
+
 ## 4. 评估 latent BC
 
 运行命令：
@@ -128,6 +155,12 @@ python eval_latent_bc.py policy_ckpt=2026-07-03_pusht_latent_bc/policy.pt
 
 ```bash
 python eval_latent_bc.py policy_ckpt=2026-07-03_pusht_latent_bc/policy.pt eval.num_eval=2
+```
+
+Transformer 小评估：
+
+```bash
+python eval_latent_bc.py policy_ckpt=2026-07-03_pusht_latent_bc_transformer/policy.pt eval.num_eval=2
 ```
 
 `eval_latent_bc.py` 会优先使用 policy checkpoint metadata 里记录的 `model_policy`。如果需要手动覆盖：
@@ -156,6 +189,21 @@ python eval.py --config-name=pusht.yaml policy=pusht/lewm eval.num_eval=50
 python eval_latent_bc.py policy_ckpt=2026-07-03_pusht_latent_bc/policy.pt eval.num_eval=50
 ```
 
+Transformer 对比：
+
+```bash
+python eval_latent_bc.py policy_ckpt=2026-07-03_pusht_latent_bc_transformer/policy.pt eval.num_eval=50
+```
+
+如果怀疑一次执行 5 个动作导致闭环不够稳，可以让 Transformer 每步重算：
+
+```bash
+python eval_latent_bc.py \
+  policy_ckpt=2026-07-03_pusht_latent_bc_transformer/policy.pt \
+  eval.num_eval=50 \
+  plan_config.receding_horizon=1
+```
+
 对比重点：
 
 - success rate
@@ -170,6 +218,7 @@ python eval_latent_bc.py policy_ckpt=2026-07-03_pusht_latent_bc/policy.pt eval.n
 3. 做 1-2 epoch 小训练确认管线通。
 4. 跑 `eval.num_eval=2` 的小评估。
 5. 构建完整 latent dataset、完整训练、完整评估，并和已跑通的 CEM baseline 对比。
+6. 在同一份 full latent dataset 上训练 Transformer policy，对比 MLP 的 `1/50` 成功率。
 
 ## 7. 常见问题
 
@@ -178,3 +227,4 @@ python eval_latent_bc.py policy_ckpt=2026-07-03_pusht_latent_bc/policy.pt eval.n
 - dataset 构建报 HDF5 找不到：检查 `$STABLEWM_HOME/datasets/pusht_expert_train.h5`
 - 评估报动作 shape 不匹配：优先检查 `K` 和 action normalization 是否与 dataset 一致
 - 成功率低但 loss 正常：先看 action 标准化、goal offset 和 episode split
+- Transformer 训练过拟合：降低 `model.hidden_dim` / `model.depth`，或增大 `model.dropout`
