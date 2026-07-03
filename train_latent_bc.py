@@ -1,8 +1,10 @@
 from datetime import date
+import json
 from pathlib import Path
 
 import hydra
 import torch
+from hydra.utils import to_absolute_path
 import torch.nn.functional as F
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader, Dataset, Subset
@@ -100,7 +102,8 @@ def run(cfg: DictConfig):
 
     torch.manual_seed(cfg.seed)
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
-    payload = torch.load(cfg.dataset, map_location="cpu", weights_only=False)
+    dataset_path = Path(to_absolute_path(cfg.dataset))
+    payload = torch.load(dataset_path, map_location="cpu", weights_only=False)
     dataset = LatentBCDataset(payload)
     metadata = payload["metadata"]
 
@@ -122,7 +125,7 @@ def run(cfg: DictConfig):
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), **cfg.optim)
 
-    output = Path(cfg.output)
+    output = Path(to_absolute_path(cfg.output))
     output.mkdir(parents=True, exist_ok=True)
     OmegaConf.save(cfg, output / "config.yaml")
     metrics_path = output / "metrics.jsonl"
@@ -137,7 +140,7 @@ def run(cfg: DictConfig):
             **{f"val/{k}": v for k, v in val_metrics.items()},
         }
         with metrics_path.open("a") as f:
-            f.write(f"{record}\n")
+            f.write(json.dumps(record) + "\n")
         print(record)
 
         if val_metrics["bc_mse"] < best_val:

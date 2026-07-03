@@ -7,6 +7,7 @@ import hydra
 import numpy as np
 import stable_worldmodel as swm
 import torch
+from hydra.utils import to_absolute_path
 from omegaconf import DictConfig, OmegaConf
 from sklearn import preprocessing
 
@@ -71,14 +72,24 @@ def _action_chunks(dataset, indices, action_horizon, scaler):
     return raw, normalized
 
 
+def _resolve_model_policy(cfg):
+    policy = cfg.get("lewm_policy", None) or cfg.get("policy", None)
+    if policy in (None, "random"):
+        policy = "pusht/lewm"
+    return policy
+
+
 @hydra.main(version_base=None, config_path="../config/eval", config_name="pusht")
 def run(cfg: DictConfig):
     output = Path(
-        cfg.get("output_dataset", "experiments/latent_bc_datasets/pusht_g25_k5.pt")
+        to_absolute_path(
+            cfg.get("output_dataset", "experiments/latent_bc_datasets/pusht_g25_k5.pt")
+        )
     )
     max_samples = cfg.get("max_samples", None)
     batch_size = int(cfg.get("encode_batch_size", 128))
     device = cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+    model_policy = _resolve_model_policy(cfg)
 
     dataset = get_dataset(cfg, cfg.eval.dataset_name)
     transform = img_transform(cfg)
@@ -92,7 +103,7 @@ def run(cfg: DictConfig):
     if len(valid_indices) == 0:
         raise ValueError("No valid samples found for latent BC dataset.")
 
-    model = swm.wm.utils.load_pretrained(cfg.policy)
+    model = swm.wm.utils.load_pretrained(model_policy)
     model = model.to(device)
     model.eval().requires_grad_(False)
     model.interpolate_pos_encoding = True
@@ -119,6 +130,7 @@ def run(cfg: DictConfig):
         "metadata": {
             "config": OmegaConf.to_container(cfg, resolve=True),
             "dataset_name": cfg.eval.dataset_name,
+            "model_policy": model_policy,
             "goal_offset_steps": goal_offset,
             "action_horizon": action_horizon,
             "action_dim": int(action.shape[-1]),

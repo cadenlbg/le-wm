@@ -25,6 +25,8 @@ delta_z = z_g - z_t
 
 原始 LeWM 评估通过 `stable_worldmodel` 使用 CEM。
 
+当前远端 SSH 环境中，PushT 的 CEM baseline 已经跑通；BC 相关实现不修改原始 `eval.py`、`jepa.py` 或 CEM 配置，只复用它们已经验证过的 HDF5 数据读取、图像 transform、episode/start index 采样和 action 标准化逻辑。
+
 相关文件：
 
 - `eval.py`：加载 LeWM checkpoint，并包装成 `WorldModelPolicy`。
@@ -42,9 +44,11 @@ CEM baseline 需要记录两种设置：
 
 ```text
 1. 完整 baseline：
+   cd /data/zflin/lewm_re/le-wm
    python eval.py --config-name=pusht.yaml policy=pusht/lewm
 
 2. 快速调试 baseline：
+   cd /data/zflin/lewm_re/le-wm
    python eval.py --config-name=pusht.yaml policy=pusht/lewm eval.num_eval=2 solver.num_samples=50 solver.n_steps=5
 ```
 
@@ -126,11 +130,19 @@ scripts/build_latent_bc_dataset.py
 职责：
 
 1. 用 `swm.wm.utils.load_pretrained()` 加载 LeWM checkpoint。
-2. 用 `stable_worldmodel.data.load_dataset()` 加载 expert dataset。
+2. 复用原始 `eval.py` 的 `get_dataset()`，继续通过 `swm.data.HDF5Dataset` 加载 expert dataset。
 3. 使用和 `eval.py` 一致的图像 transform。
 4. 对合法 index 编码 `o_t` 和 `o_{t+G}`，得到 `z_t` 和 `z_g`。
 5. 提取专家动作片段 `a_{t:t+K}`。
 6. 把紧凑 tensor 数据集保存到 `experiments/latent_bc_datasets/`。
+
+默认 checkpoint 使用当前已准备好的：
+
+```text
+policy=pusht/lewm
+```
+
+它对应 `$STABLEWM_HOME/checkpoints/models--pusht--lewm/` 下的 loader 缓存布局，不要求额外创建旧式 `pusht/lewm_object.ckpt`。
 
 建议输出字段：
 
@@ -351,10 +363,13 @@ policy 指标：
 确认当前 LeWM-CEM 仍能运行：
 
 ```text
+cd /data/zflin/lewm_re/le-wm
+conda activate lewm
+export STABLEWM_HOME=/data/zflin/lewm_re/stablewm_data
 python eval.py --config-name=pusht.yaml policy=pusht/lewm eval.num_eval=2 solver.num_samples=50 solver.n_steps=5
 ```
 
-保存结果到：
+当前该 baseline 已在远端跑通。后续只需要把对应命令、结果和配置作为 BC 对比参考保存到：
 
 ```text
 experiments/YYYY-MM-DD_pusht_cem_reference/

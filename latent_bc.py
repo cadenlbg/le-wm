@@ -95,8 +95,14 @@ class LatentBCWorldPolicy:
         if self._action_buffer:
             return self._action_buffer.popleft()
 
-        z_t = self._encode_pixels(info["pixels"], key="pixels")
-        z_g = self._encode_pixels(info["goal"], key="goal")
+        z_t = self._encode_pixels(
+            self._get_first(info, ("pixels", "obs", "observation")),
+            key="pixels",
+        )
+        z_g = self._encode_pixels(
+            self._get_first(info, ("goal", "goal_pixels", "pixels_goal")),
+            key="goal",
+        )
         action = self.bc_policy(z_t, z_g)[0]
         action = self._inverse_action_scale(action).detach().cpu().numpy()
 
@@ -114,6 +120,13 @@ class LatentBCWorldPolicy:
         if self.action_mean is None or self.action_scale is None:
             return action
         return action * self.action_scale + self.action_mean
+
+    @staticmethod
+    def _get_first(mapping: Dict[str, Any], keys):
+        for key in keys:
+            if key in mapping:
+                return mapping[key]
+        raise KeyError(f"None of these keys were found in policy info: {keys}")
 
     def _encode_pixels(self, pixels: Any, key: str) -> torch.Tensor:
         pixels = self._prepare_pixels(pixels, key)

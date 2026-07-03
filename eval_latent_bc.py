@@ -9,6 +9,7 @@ import hydra
 import numpy as np
 import stable_worldmodel as swm
 import torch
+from hydra.utils import to_absolute_path
 from omegaconf import DictConfig, OmegaConf
 
 from eval import get_dataset, get_episodes_length, img_transform
@@ -27,11 +28,21 @@ def _load_policy(path, device):
     return model, ckpt
 
 
+def _resolve_model_policy(cfg, metadata):
+    policy = cfg.get("lewm_policy", None) or cfg.get("policy", None)
+    if policy in (None, "random"):
+        policy = metadata.get("model_policy", None)
+    if policy in (None, "random"):
+        policy = "pusht/lewm"
+    return policy
+
+
 @hydra.main(version_base=None, config_path="./config/eval", config_name="pusht")
 def run(cfg: DictConfig):
     policy_ckpt = cfg.get("policy_ckpt")
     if policy_ckpt is None:
         raise ValueError("Set policy_ckpt=experiments/.../policy.pt")
+    policy_ckpt = Path(to_absolute_path(policy_ckpt))
 
     device = cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu")
     cfg.world.max_episode_steps = 2 * cfg.eval.eval_budget
@@ -45,13 +56,15 @@ def run(cfg: DictConfig):
     col_name = _episode_column(dataset)
     ep_indices, _ = np.unique(dataset.get_col_data(col_name), return_index=True)
 
-    lewm = swm.wm.utils.load_pretrained(cfg.policy)
+    bc_policy, ckpt = _load_policy(policy_ckpt, device)
+    metadata = ckpt["metadata"]
+    model_policy = _resolve_model_policy(cfg, metadata)
+
+    lewm = swm.wm.utils.load_pretrained(model_policy)
     lewm = lewm.to(device).eval()
     lewm.requires_grad_(False)
     lewm.interpolate_pos_encoding = True
 
-    bc_policy, ckpt = _load_policy(policy_ckpt, device)
-    metadata = ckpt["metadata"]
     policy = LatentBCWorldPolicy(
         lewm_encoder=lewm,
         bc_policy=bc_policy,
@@ -86,7 +99,7 @@ def run(cfg: DictConfig):
 
     world.set_policy(policy)
 
-    results_path = Path(policy_ckpt).resolve().parent
+    results_path = policy_ckpt.resolve().parent
     results_path.mkdir(parents=True, exist_ok=True)
 
     start_time = time.time()
