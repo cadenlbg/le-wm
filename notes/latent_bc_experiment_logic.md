@@ -139,6 +139,17 @@ concat(z_t, z_g, delta_z)
   -> reshape [K, action_dim]
 ```
 
+现在也支持 Transformer 版本：
+
+```text
+[z_t, z_g, delta_z, action_query_1, ..., action_query_K]
+  -> TransformerEncoder
+  -> action tokens
+  -> [K, action_dim]
+```
+
+Transformer 版本不是把一个拼接向量硬塞进去，而是把当前状态、目标状态、latent 差值和每个 action step 的 query 都当成 token。这样它能显式建模 goal 条件和 action chunk 内部各 step 之间的关系。
+
 `LatentBCWorldPolicy` 用在环境评估中：
 
 1. 从 `info` 里取当前 pixels 和 goal pixels。
@@ -258,6 +269,8 @@ python train_latent_bc.py \
   model.hidden_dim=512 \
   model.depth=3 \
   model.dropout=0.1 \
+  model.architecture=mlp \
+  model.num_heads=8 \
   optim.lr=0.0003 \
   optim.weight_decay=0.0001 \
   loss.lambda_smooth=0.0 \
@@ -272,14 +285,31 @@ python train_latent_bc.py \
 - `train_split`：按 episode 划分训练集比例，默认 `0.9`。
 - `loader.batch_size`：训练 batch size。latent 数据较小，通常可以较大。
 - `model.hidden_dim`：MLP 隐层宽度。默认 `512`。
-- `model.depth`：MLP 层数。默认 `3`。
+- `model.depth`：MLP 层数，或 Transformer encoder 层数。默认 `3`。
 - `model.dropout`：默认 `0.1`，数据少时可保留，数据足够时可尝试 `0.0`。
+- `model.architecture`：`mlp` 或 `transformer`。默认 `mlp`，对照实验建议再跑 `transformer`。
+- `model.num_heads`：Transformer attention heads 数，只在 `architecture=transformer` 时使用。默认 `8`。
 - `optim.lr`：AdamW 学习率。默认 `3e-4`。
 - `optim.weight_decay`：默认 `1e-4`。
 - `loss.lambda_smooth`：动作片段平滑正则。
 - `loss.lambda_mag`：动作幅值正则。
 
 第一轮建议保持默认模型，不急着加大网络。先看 train/val MSE 是否正常下降，以及环境成功率是否有信号。
+
+如果要测试 Transformer policy：
+
+```bash
+python train_latent_bc.py \
+  dataset=latent_bc_datasets/pusht_g25_k5.pt \
+  output=2026-07-03_pusht_latent_bc_transformer \
+  model.architecture=transformer \
+  model.hidden_dim=512 \
+  model.depth=4 \
+  model.num_heads=8 \
+  train.epochs=100
+```
+
+Transformer 的优点是能建模 `z_t/z_g/delta_z` 条件 token 和 K 个动作 token 之间的关系；缺点是参数更多，可能更容易过拟合，也更依赖完整数据集规模。第一轮建议先用 full latent dataset，不要只用 `max_samples=128` 判断效果。
 
 ### 评估参数
 

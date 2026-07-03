@@ -17,17 +17,45 @@ class LatentGoalBCPolicy(nn.Module):
         hidden_dim: int = 512,
         depth: int = 3,
         dropout: float = 0.1,
+        architecture: str = "mlp",
+        num_heads: int = 8,
     ):
         super().__init__()
         if depth < 1:
             raise ValueError("depth must be >= 1")
+        if architecture not in {"mlp", "transformer"}:
+            raise ValueError("architecture must be 'mlp' or 'transformer'")
 
         self.latent_dim = int(latent_dim)
         self.action_dim = int(action_dim)
         self.action_horizon = int(action_horizon)
+        self.architecture = architecture
 
-        layers = []
+        if architecture == "mlp":
+            self.net = self._build_mlp(hidden_dim, depth, dropout)
+        else:
+            self.net = None
+            self.condition_proj = nn.Linear(self.latent_dim, hidden_dim)
+            self.action_queries = nn.Parameter(torch.randn(self.action_horizon, hidden_dim) * 0.02)
+            self.token_type = nn.Parameter(torch.randn(4, hidden_dim) * 0.02)
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=hidden_dim,
+                nhead=num_heads,
+                dim_feedforward=4 * hidden_dim,
+                dropout=dropout,
+                activation="gelu",
+                batch_first=True,
+                norm_first=True,
+            )
+            self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=depth)
+            self.action_head = nn.Sequential(
+                nn.LayerNorm(hidden_dim),
+                nn.Linear(hidden_dim, self.action_dim),
+            )
+
+    def _build_mlp(self, hidden_dim: int, depth: int, dropout: float) -> nn.Sequential:
         input_dim = 3 * self.latent_dim
+        layers = []
         for layer_idx in range(depth):
             in_dim = input_dim if layer_idx == 0 else hidden_dim
             layers.extend(
@@ -39,7 +67,7 @@ class LatentGoalBCPolicy(nn.Module):
                 ]
             )
         layers.append(nn.Linear(hidden_dim, self.action_horizon * self.action_dim))
-        self.net = nn.Sequential(*layers)
+        return nn.Sequential(*layers)
 
     def forward(
         self,
@@ -49,9 +77,38 @@ class LatentGoalBCPolicy(nn.Module):
     ) -> torch.Tensor:
         if delta_z is None:
             delta_z = z_g - z_t
+
+        if self.architecture == "transformer":
+            return self._forward_transformer(z_t, z_g, delta_z)
+
         x = torch.cat([z_t, z_g, delta_z], dim=-1)
         action = self.net(x)
         return action.reshape(*action.shape[:-1], self.action_horizon, self.action_dim)
+
+    def _forward_transformer(
+        self,
+        z_t: torch.Tensor,
+        z_g: torch.Tensor,
+        delta_z: torch.Tensor,
+    ) -> torch.Tensor:
+        leading_shape = z_t.shape[:-1]
+        z_t = z_t.reshape(-1, self.latent_dim)
+        z_g = z_g.reshape(-1, self.latent_dim)
+        delta_z = delta_z.reshape(-1, self.latent_dim)
+
+        condition = torch.stack([z_t, z_g, delta_z], dim=1)
+        condition = self.condition_proj(condition)
+        condition = condition + self.token_type[:3].unsqueeze(0)
+
+        batch_size = condition.shape[0]
+        queries = self.action_queries.unsqueeze(0).expand(batch_size, -1, -1)
+        queries = queries + self.token_type[3].view(1, 1, -1)
+
+        tokens = torch.cat([condition, queries], dim=1)
+        tokens = self.transformer(tokens)
+        action_tokens = tokens[:, 3:]
+        action = self.action_head(action_tokens)
+        return action.reshape(*leading_shape, self.action_horizon, self.action_dim)
 
 
 class LatentBCWorldPolicy:
