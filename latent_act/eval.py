@@ -4,11 +4,9 @@ import os
 
 os.environ["MUJOCO_GL"] = "egl"
 
-import sys
 import time
 from pathlib import Path
 
-import hydra
 import numpy as np
 import stable_worldmodel as swm
 import torch
@@ -20,20 +18,48 @@ from latent_act.policy import LatentACTWorldPolicy
 from latent_act.shared import resolve_experiment_path
 
 
-def _set_default_hydra_dir(job_name):
-    if any(arg.startswith("hydra.run.dir=") for arg in sys.argv[1:]):
-        return
-    run_dir = resolve_experiment_path(Path("hydra") / job_name)
-    sys.argv.append(f"hydra.run.dir={run_dir}/${{now:%Y-%m-%d}}/${{now:%H-%M-%S}}")
-
-
-def _allow_new_hydra_overrides(keys):
-    prefixes = tuple(f"{key}=" for key in keys)
-    for idx, arg in enumerate(sys.argv[1:], start=1):
-        if arg.startswith("+") or arg.startswith("++"):
-            continue
-        if arg.startswith(prefixes):
-            sys.argv[idx] = f"+{arg}"
+def build_default_cfg() -> DictConfig:
+    return OmegaConf.create(
+        {
+            "seed": 42,
+            "policy": "random",
+            "policy_ckpt": None,
+            "lewm_policy": "pusht/lewm",
+            "device": "cuda",
+            "world": {
+                "env_name": "swm/PushT-v1",
+                "num_envs": 50,
+                "max_episode_steps": 100,
+            },
+            "dataset": {
+                "stats": "pusht_expert_train",
+                "keys_to_cache": ["action", "proprio", "state"],
+            },
+            "plan_config": {
+                "horizon": 5,
+                "receding_horizon": 1,
+                "action_block": 5,
+            },
+            "eval": {
+                "num_eval": 50,
+                "goal_offset_steps": 25,
+                "eval_budget": 50,
+                "img_size": 224,
+                "dataset_name": "pusht_expert_train",
+                "callables": [
+                    {
+                        "method": "_set_state",
+                        "args": {"state": {"value": "state"}},
+                    },
+                    {
+                        "method": "_set_goal_state",
+                        "args": {"goal_state": {"value": "goal_state"}},
+                    },
+                ],
+            },
+            "output": {"filename": "pusht_results.txt"},
+        }
+    )
 
 
 def _episode_column(dataset):
@@ -57,8 +83,8 @@ def _resolve_model_policy(cfg, metadata):
     return policy
 
 
-@hydra.main(version_base=None, config_path="./config/eval", config_name="pusht")
 def run(cfg: DictConfig):
+    cfg = OmegaConf.merge(build_default_cfg(), cfg)
     policy_ckpt = cfg.get("policy_ckpt")
     if policy_ckpt is None:
         raise ValueError("Set policy_ckpt=YYYY-MM-DD_pusht_latent_act/policy.pt")
@@ -137,10 +163,3 @@ def run(cfg: DictConfig):
         f.write("==== RESULTS ====\n")
         f.write(f"metrics: {metrics}\n")
         f.write(f"evaluation_time: {end_time - start_time} seconds\n")
-
-
-if __name__ == "__main__":
-    _allow_new_hydra_overrides(("policy_ckpt", "lewm_policy", "device"))
-    _set_default_hydra_dir("eval_latent_act")
-    run()
-
