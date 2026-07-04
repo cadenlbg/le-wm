@@ -26,6 +26,7 @@ def build_default_cfg() -> DictConfig:
             "policy_ckpt": None,
             "lewm_policy": "pusht/lewm",
             "device": "cuda",
+            "cache_dir": None,
             "world": {
                 "env_name": "swm/PushT-v1",
                 "num_envs": 50,

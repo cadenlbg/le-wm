@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 import json
+import math
 from pathlib import Path
 
 import torch
@@ -100,6 +101,7 @@ def build_default_cfg() -> DictConfig:
             },
             "optim": {"lr": 3e-4, "weight_decay": 1e-4},
             "train": {"epochs": 100, "grad_clip": 1.0},
+            "log": {"print_every_factor": 1.1, "print_first_n": 5},
             "loss": {"lambda_latent": 0.1, "lambda_smooth": 0.0},
         }
     )
@@ -136,6 +138,7 @@ def run(cfg: DictConfig):
     metrics_path = output / "metrics.jsonl"
 
     best_val = float("inf")
+    next_print_epoch = 1
     for epoch in range(1, int(cfg.train.epochs) + 1):
         train_metrics = _run_epoch(model, train_loader, optimizer, device, cfg, True)
         val_metrics = _run_epoch(model, val_loader, optimizer, device, cfg, False)
@@ -146,7 +149,14 @@ def run(cfg: DictConfig):
         }
         with metrics_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
-        print(record)
+
+        should_print = epoch <= int(cfg.log.print_first_n) or epoch >= next_print_epoch
+        if should_print:
+            print(record)
+            next_print_epoch = max(
+                epoch + 1,
+                int(math.ceil(max(epoch, 1) * float(cfg.log.print_every_factor))),
+            )
 
         if val_metrics["action_mse"] + cfg.loss.lambda_latent * val_metrics["latent_mse"] < best_val:
             best_val = val_metrics["action_mse"] + cfg.loss.lambda_latent * val_metrics["latent_mse"]
