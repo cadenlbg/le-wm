@@ -27,6 +27,14 @@ def _experiments_root():
     return Path("/data/zflin/lewm_re/experiments")
 
 
+def _datasets_root():
+    if os.environ.get("LEWM_DATASETS_DIR"):
+        return Path(os.environ["LEWM_DATASETS_DIR"])
+    if os.environ.get("STABLEWM_HOME"):
+        return Path(os.environ["STABLEWM_HOME"]).expanduser().resolve() / "latent_bc_datasets"
+    return Path("/data/zflin/lewm_re/stablewm_data/latent_bc_datasets")
+
+
 def _resolve_experiment_path(path):
     path = Path(path).expanduser()
     if path.is_absolute():
@@ -128,9 +136,9 @@ def _resolve_model_policy(cfg):
 
 @hydra.main(version_base=None, config_path="../config/eval", config_name="pusht")
 def run(cfg: DictConfig):
-    output = _resolve_experiment_path(
-        cfg.get("output_dataset", "latent_bc_datasets/pusht_g25_k5.pt")
-    )
+    output = Path(cfg.get("output_dataset", _datasets_root() / "pusht_g25_k5.pt"))
+    if not output.is_absolute():
+        output = _datasets_root() / output
     max_samples = cfg.get("max_samples", None)
     batch_size = int(cfg.get("encode_batch_size", 128))
     device = cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu")

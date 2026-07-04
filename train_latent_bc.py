@@ -21,6 +21,14 @@ def _experiments_root():
     return Path("/data/zflin/lewm_re/experiments")
 
 
+def _datasets_root():
+    if os.environ.get("LEWM_DATASETS_DIR"):
+        return Path(os.environ["LEWM_DATASETS_DIR"])
+    if os.environ.get("STABLEWM_HOME"):
+        return Path(os.environ["STABLEWM_HOME"]).expanduser().resolve() / "latent_bc_datasets"
+    return Path("/data/zflin/lewm_re/stablewm_data/latent_bc_datasets")
+
+
 def _resolve_experiment_path(path):
     path = Path(path).expanduser()
     if path.is_absolute():
@@ -29,6 +37,16 @@ def _resolve_experiment_path(path):
     if parts and parts[0] == "experiments":
         path = Path(*parts[1:])
     return _experiments_root() / path
+
+
+def _resolve_dataset_path(path):
+    path = Path(path).expanduser()
+    if path.is_absolute():
+        return path
+    parts = path.parts
+    if parts and parts[0] == "latent_bc_datasets":
+        path = Path(*parts[1:])
+    return _datasets_root() / path
 
 
 def _set_default_hydra_dir(job_name):
@@ -134,7 +152,7 @@ def run(cfg: DictConfig):
 
     torch.manual_seed(cfg.seed)
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
-    dataset_path = _resolve_experiment_path(cfg.dataset)
+    dataset_path = _resolve_dataset_path(cfg.dataset)
     payload = torch.load(dataset_path, map_location="cpu", weights_only=False)
     dataset = LatentBCDataset(payload)
     metadata = payload["metadata"]
