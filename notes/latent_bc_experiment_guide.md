@@ -2,6 +2,12 @@
 
 这份说明书对应当前仓库里的 latent goal-conditioned BC 方案，默认任务是 `PushT`。
 
+相关扩展文档：
+
+- `notes/latent_bc_experiment_logic.md`：latent BC 总体逻辑和参数说明。
+- `notes/latent_bc_transformer_policy.md`：Transformer policy 设计与实验矩阵。
+- `notes/lewm_act_downstream_experiment_plan.md`：参考 ACT 后的 LeWM 下游实验改进方案。
+
 ## 1. 依赖与准备
 
 所有命令默认在远端 SSH 的 Linux 环境执行：
@@ -11,6 +17,7 @@ cd /data/zflin/lewm_re/le-wm
 conda activate lewm
 export STABLEWM_HOME=/data/zflin/lewm_re/stablewm_data
 export HF_ENDPOINT=https://hf-mirror.com
+export LEWM_DATASETS_DIR=/data/zflin/lewm_re/stablewm_data/latent_bc_datasets
 ```
 
 BC 相关运行产物默认不写入 `le-wm` 仓库。脚本会把相对实验路径解析到：
@@ -57,7 +64,7 @@ BC 脚本继续复用原始 `eval.py` 的 HDF5 数据加载逻辑，不要求切
 
 - `G = 25`
 - `K = 5`
-- 输出：`/data/zflin/lewm_re/experiments/latent_bc_datasets/pusht_g25_k5.pt`
+- 输出：`/data/zflin/lewm_re/stablewm_data/latent_bc_datasets/pusht_g25_k5.pt`
 
 运行命令：
 
@@ -101,7 +108,7 @@ python train_latent_bc.py
 如果要指定数据集和输出目录：
 
 ```bash
-python train_latent_bc.py dataset=latent_bc_datasets/pusht_g25_k5.pt output=2026-07-03_pusht_latent_bc
+python train_latent_bc.py dataset=pusht_g25_k5.pt output=2026-07-03_pusht_latent_bc
 ```
 
 训练产物：
@@ -120,7 +127,7 @@ python train_latent_bc.py dataset=latent_bc_datasets/pusht_g25_k5.pt output=2026
 
 ```bash
 python train_latent_bc.py \
-  dataset=latent_bc_datasets/pusht_g25_k5.pt \
+  dataset=pusht_g25_k5.pt \
   output=2026-07-03_pusht_latent_bc_transformer \
   model.architecture=transformer \
   model.hidden_dim=512 \
@@ -134,7 +141,7 @@ python train_latent_bc.py \
 
 ```bash
 python train_latent_bc.py \
-  dataset=latent_bc_datasets/pusht_g25_k5.pt \
+  dataset=pusht_g25_k5.pt \
   output=2026-07-03_pusht_latent_bc_transformer_small \
   model.architecture=transformer \
   model.hidden_dim=256 \
