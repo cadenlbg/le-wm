@@ -2,11 +2,8 @@ from __future__ import annotations
 
 from datetime import date
 import json
-import os
 from pathlib import Path
-import sys
 
-import hydra
 import torch
 import torch.nn.functional as F
 from omegaconf import DictConfig, OmegaConf
@@ -20,22 +17,6 @@ try:
     from tqdm.auto import tqdm
 except ImportError:  # pragma: no cover
     tqdm = None
-
-
-def _set_default_hydra_dir(job_name):
-    if any(arg.startswith("hydra.run.dir=") for arg in sys.argv[1:]):
-        return
-    run_dir = resolve_experiment_path(Path("hydra") / job_name)
-    sys.argv.append(f"hydra.run.dir={run_dir}/${{now:%Y-%m-%d}}/${{now:%H-%M-%S}}")
-
-
-def _allow_new_hydra_overrides(keys):
-    prefixes = tuple(f"{key}=" for key in keys)
-    for idx, arg in enumerate(sys.argv[1:], start=1):
-        if arg.startswith("+") or arg.startswith("++"):
-            continue
-        if arg.startswith(prefixes):
-            sys.argv[idx] = f"+{arg}"
 
 
 def _episode_split(episodes, train_split, seed):
@@ -100,8 +81,7 @@ def _run_epoch(model, loader, optimizer, device, cfg, train):
     return {key: value / max(n_batches, 1) for key, value in totals.items()}
 
 
-@hydra.main(version_base=None, config_path=None)
-def run(cfg: DictConfig):
+def build_default_cfg() -> DictConfig:
     defaults = OmegaConf.create(
         {
             "dataset": "latent_bc_datasets/pusht_g25_k5.pt",
@@ -123,7 +103,11 @@ def run(cfg: DictConfig):
             "loss": {"lambda_latent": 0.1, "lambda_smooth": 0.0},
         }
     )
-    cfg = OmegaConf.merge(defaults, cfg)
+    return defaults
+
+
+def run(cfg: DictConfig):
+    cfg = OmegaConf.merge(build_default_cfg(), cfg)
 
     torch.manual_seed(cfg.seed)
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
@@ -184,7 +168,9 @@ def run(cfg: DictConfig):
 
 
 if __name__ == "__main__":
-    _set_default_hydra_dir("train_latent_act")
-    _allow_new_hydra_overrides(("dataset", "output", "max_samples", "device"))
-    run()
+    import sys
 
+    from omegaconf import OmegaConf
+
+    cli = OmegaConf.from_cli(sys.argv[1:])
+    run(cli)
