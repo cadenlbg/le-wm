@@ -37,12 +37,31 @@ def resolve_experiment_path(path) -> Path:
 
 def resolve_dataset_path(path) -> Path:
     path = Path(path).expanduser()
+    candidates = []
     if path.is_absolute():
-        return path
-    parts = path.parts
-    if parts and parts[0] == "latent_bc_datasets":
-        path = Path(*parts[1:])
-    return datasets_root() / path
+        candidates.append(path)
+    else:
+        parts = path.parts
+        if parts and parts[0] == "latent_bc_datasets":
+            path = Path(*parts[1:])
+        candidates.append(datasets_root() / path)
+        candidates.append(experiments_root() / "latent_bc_datasets" / path.name)
+        candidates.append(experiments_root() / "latent_bc_datasets" / path)
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    stem = path.stem
+    roots = [datasets_root(), experiments_root() / "latent_bc_datasets"]
+    for root in roots:
+        if not root.exists():
+            continue
+        hits = sorted(root.glob(f"{stem}*.pt"))
+        if hits:
+            return hits[0]
+
+    raise FileNotFoundError(f"Could not resolve dataset path from {path}. Checked: {candidates}")
 
 
 def episode_column(dataset) -> str:
@@ -85,4 +104,3 @@ def as_numpy(value):
     if torch.is_tensor(value):
         return value.detach().cpu().numpy()
     return np.asarray(value)
-
