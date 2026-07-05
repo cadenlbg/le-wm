@@ -30,6 +30,8 @@ def build_default_cfg() -> DictConfig:
             "train_split": 0.9,
             "device": "cuda",
             "max_samples": None,
+            "subgoal_horizon": None,
+            "action_horizon": None,
             "loader": {"batch_size": 256, "num_workers": 0},
             "model": {
                 "hidden_dim": 512,
@@ -83,9 +85,49 @@ def _load_frozen_wm(cfg, device):
     return wm
 
 
-def _loss(pred_action, pred_z_h, batch, cfg, wm_model=None):
+def _resolve_subgoal_horizon(cfg, payload):
+    available = int(payload.get("z_h_seq", payload["z_h"].unsqueeze(1)).shape[1])
+    requested = cfg.get("subgoal_horizon", None)
+    if requested is None:
+        return available
+    requested = int(requested)
+    if requested < 1:
+        raise ValueError("subgoal_horizon must be >= 1")
+    if requested > available:
+        raise ValueError(f"Requested subgoal_horizon={requested}, but dataset only has {available} steps.")
+    return requested
+
+
+def _resolve_action_horizon(cfg, payload):
+    available = int(payload["action"].shape[1])
+    requested = cfg.get("action_horizon", None)
+    if requested is None:
+        return available
+    requested = int(requested)
+    if requested < 1:
+        raise ValueError("action_horizon must be >= 1")
+    if requested > available:
+        raise ValueError(f"Requested action_horizon={requested}, but dataset only has {available} action steps.")
+    return requested
+
+
+def _slice_subgoal_batch(batch, subgoal_horizon):
+    batch["z_h_seq"] = batch["z_h_seq"][:, :subgoal_horizon]
+    batch["z_h"] = batch["z_h_seq"][:, -1]
+    if "subgoal_steps" in batch:
+        batch["subgoal_steps"] = batch["subgoal_steps"][:, :subgoal_horizon]
+        batch["subgoal_step"] = batch["subgoal_steps"][:, -1]
+    return batch
+
+
+def _slice_action_batch(batch, action_horizon):
+    batch["action"] = batch["action"][:, :action_horizon]
+    return batch
+
+
+def _loss(pred_action, pred_z_h_seq, batch, cfg, wm_model=None):
     action_loss = F.mse_loss(pred_action, batch["action"])
-    subgoal_loss = F.mse_loss(pred_z_h, batch["z_h"])
+    subgoal_loss = F.mse_loss(pred_z_h_seq, batch["z_h_seq"])
     smooth_loss = pred_action[:, 1:].sub(pred_action[:, :-1]).pow(2).mean() if pred_action.size(1) > 1 else pred_action.new_tensor(0.0)
     rollout_loss = pred_action.new_tensor(0.0)
     align_loss = pred_action.new_tensor(0.0)
@@ -97,7 +139,7 @@ def _loss(pred_action, pred_z_h, batch, cfg, wm_model=None):
             history_size=cfg.wm.history_size,
         )
         rollout_loss = F.mse_loss(pred_rollout, batch["z_h"])
-        align_loss = F.mse_loss(pred_rollout, pred_z_h)
+        align_loss = F.mse_loss(pred_rollout, pred_z_h_seq[:, -1])
 
     total = (
         action_loss
@@ -123,14 +165,16 @@ def _run_epoch(model, loader, optimizer, device, cfg, train, wm_model=None):
     iterator = tqdm(loader, desc="train" if train else "eval", leave=False, unit="batch") if tqdm is not None else loader
     for batch in iterator:
         batch = _move_batch(batch, device)
+        batch = _slice_subgoal_batch(batch, model.subgoal_horizon)
+        batch = _slice_action_batch(batch, model.action_horizon)
         with torch.set_grad_enabled(train):
-            pred_action, pred_z_h = model(
+            pred_action, pred_z_h_seq = model(
                 batch["z_t"],
                 batch["z_g"],
-                z_h_teacher=batch["z_h"],
+                z_h_teacher=batch["z_h_seq"],
                 teacher_force_subgoal=bool(cfg.train.teacher_force_subgoal),
             )
-            loss, metrics = _loss(pred_action, pred_z_h, batch, cfg, wm_model=wm_model)
+            loss, metrics = _loss(pred_action, pred_z_h_seq, batch, cfg, wm_model=wm_model)
         if train:
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -150,6 +194,10 @@ def run(cfg: DictConfig):
     payload = torch.load(resolve_dataset_path(cfg.dataset), map_location="cpu", weights_only=False)
     dataset = LatentSubgoalACTDataset(payload, max_samples=cfg.max_samples)
     metadata = payload["metadata"]
+    subgoal_horizon = _resolve_subgoal_horizon(cfg, payload)
+    action_horizon = _resolve_action_horizon(cfg, payload)
+    cfg.subgoal_horizon = subgoal_horizon
+    cfg.action_horizon = action_horizon
     train_idx, val_idx = _episode_split(payload["episode"][: len(dataset)], cfg.train_split, cfg.seed)
     generator = torch.Generator().manual_seed(cfg.seed)
     train_loader = DataLoader(Subset(dataset, train_idx), shuffle=True, generator=generator, **cfg.loader)
@@ -158,7 +206,8 @@ def run(cfg: DictConfig):
     model = LatentSubgoalACTPolicy(
         latent_dim=metadata["latent_dim"],
         action_dim=metadata["action_dim"],
-        action_horizon=metadata["action_horizon"],
+        action_horizon=action_horizon,
+        subgoal_horizon=subgoal_horizon,
         **cfg.model,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), **cfg.optim)
@@ -195,7 +244,8 @@ def run(cfg: DictConfig):
                     "model_config": {
                         "latent_dim": metadata["latent_dim"],
                         "action_dim": metadata["action_dim"],
-                        "action_horizon": metadata["action_horizon"],
+                        "action_horizon": action_horizon,
+                        "subgoal_horizon": subgoal_horizon,
                         **OmegaConf.to_container(cfg.model, resolve=True),
                     },
                     "metadata": metadata,

@@ -50,6 +50,7 @@ def run(cfg):
         "z_t_shape": list(payload["z_t"].shape),
         "z_g_shape": list(payload["z_g"].shape),
         "z_h_shape": list(payload["z_h"].shape),
+        "z_h_seq_shape": list(payload["z_h_seq"].shape) if "z_h_seq" in payload else None,
         "action_shape": list(payload["action"].shape),
         "metadata": {
             "dataset_name": metadata.get("dataset_name"),

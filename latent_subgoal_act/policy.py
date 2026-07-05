@@ -84,20 +84,20 @@ class LatentSubgoalACTWorldPolicy:
 
         z_t = self._encode_info_pixels(info, self.PIXEL_KEYS, "pixels")
         z_g = self._encode_info_pixels(info, self.GOAL_KEYS, "goal")
-        action_chunk, pred_z_h = self.act_policy(z_t, z_g)
-        action_chunk = self._maybe_plan_action_chunk(z_t, z_g, pred_z_h, action_chunk)
+        action_chunk, pred_z_h_seq = self.act_policy(z_t, z_g)
+        action_chunk = self._maybe_plan_action_chunk(z_t, z_g, pred_z_h_seq, action_chunk)
         if self.temporal_ensemble:
             action_chunk = self._temporal_ensemble_action(action_chunk)
         action_chunk = self._inverse_action_scale(action_chunk).detach().cpu().numpy()
         self._fill_action_buffer(action_chunk)
         return self._action_buffer.popleft()
 
-    def _maybe_plan_action_chunk(self, z_t: torch.Tensor, z_g: torch.Tensor, pred_z_h: torch.Tensor, action_chunk: torch.Tensor) -> torch.Tensor:
+    def _maybe_plan_action_chunk(self, z_t: torch.Tensor, z_g: torch.Tensor, pred_z_h_seq: torch.Tensor, action_chunk: torch.Tensor) -> torch.Tensor:
         if self.rerank_wm is None:
             return action_chunk
         if self.cem_enabled:
-            return self._cem_action_chunk(z_t, z_g, pred_z_h, action_chunk)
-        return self._maybe_rerank_action_chunk(z_t, z_g, pred_z_h, action_chunk)
+            return self._cem_action_chunk(z_t, z_g, pred_z_h_seq, action_chunk)
+        return self._maybe_rerank_action_chunk(z_t, z_g, pred_z_h_seq, action_chunk)
 
     def _temporal_ensemble_action(self, action_chunk: torch.Tensor) -> torch.Tensor:
         self._chunk_history.appendleft(action_chunk.detach())
@@ -117,7 +117,7 @@ class LatentSubgoalACTWorldPolicy:
         action = (stacked * weight).sum(dim=1) / weight.sum()
         return action.unsqueeze(1)
 
-    def _maybe_rerank_action_chunk(self, z_t: torch.Tensor, z_g: torch.Tensor, pred_z_h: torch.Tensor, action_chunk: torch.Tensor) -> torch.Tensor:
+    def _maybe_rerank_action_chunk(self, z_t: torch.Tensor, z_g: torch.Tensor, pred_z_h_seq: torch.Tensor, action_chunk: torch.Tensor) -> torch.Tensor:
         if self.rerank_wm is None or self.rerank_num_candidates <= 1:
             return action_chunk
 
@@ -135,7 +135,7 @@ class LatentSubgoalACTWorldPolicy:
         if self.rerank_target == "goal":
             target = z_g
         elif self.rerank_target == "subgoal":
-            target = pred_z_h
+            target = pred_z_h_seq[:, -1]
         else:
             raise ValueError("rerank_target must be 'subgoal' or 'goal'")
 
@@ -144,11 +144,11 @@ class LatentSubgoalACTWorldPolicy:
         batch_idx = torch.arange(batch_size, device=action_chunk.device)
         return candidates[batch_idx, best]
 
-    def _cem_action_chunk(self, z_t: torch.Tensor, z_g: torch.Tensor, pred_z_h: torch.Tensor, action_chunk: torch.Tensor) -> torch.Tensor:
+    def _cem_action_chunk(self, z_t: torch.Tensor, z_g: torch.Tensor, pred_z_h_seq: torch.Tensor, action_chunk: torch.Tensor) -> torch.Tensor:
         batch_size, horizon, action_dim = action_chunk.shape
         mean = action_chunk.detach()
         std = torch.full_like(mean, self.cem_init_std)
-        target = pred_z_h if self.rerank_target == "subgoal" else z_g
+        target = pred_z_h_seq[:, -1] if self.rerank_target == "subgoal" else z_g
         elite_count = max(1, int(round(self.cem_num_candidates * self.cem_elite_frac)))
 
         best_candidate = mean

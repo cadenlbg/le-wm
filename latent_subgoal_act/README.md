@@ -1,6 +1,6 @@
 # latent_subgoal_act 使用说明
 
-`latent_subgoal_act` 用于训练和评估 **latent subgoal ACT policy**。它的目标是：先用预训练 LEWM/world model 把图像状态编码成 latent，再训练一个策略模型从当前 latent 和目标 latent 出发，预测中间 subgoal latent，并输出一段动作序列。
+`latent_subgoal_act` 用于训练和评估 **latent subgoal ACT policy**。它的目标是：先用预训练 LEWM/world model 把图像状态编码成 latent，再训练一个策略模型从当前 latent 和目标 latent 出发，预测未来 latent 序列 `z_hat_{t+1:t+T}`，并基于这段未来 latent 输出一段动作序列。
 
 整体流程：
 
@@ -20,7 +20,7 @@
 | `build_dataset.py` | 从原始 PushT dataset 构建 latent subgoal ACT 训练数据。 |
 | `inspect_dataset.py` | 检查构建好的 `.pt` 数据集是否完整、shape 是否正确、split 是否符合预期。 |
 | `dataset.py` | PyTorch Dataset 封装，供 `train.py` 读取 `.pt` payload。 |
-| `model.py` | 定义 `LatentSubgoalACTPolicy`，即先预测 subgoal latent、再预测动作块的 Transformer policy。 |
+| `model.py` | 定义 `LatentSubgoalACTPolicy`，即先预测未来 subgoal latent 序列、再预测动作块的 Transformer policy。 |
 | `train.py` | 训练 policy，输出 `config.yaml`、`metrics.jsonl`、最佳 `policy.pt`。 |
 | `policy.py` | 将训练好的 policy 包装成可被 `stable_worldmodel.World` 调用的闭环控制策略。 |
 | `eval.py` | 加载 `policy.pt` 并在 PushT world 环境中评估，保存 metrics、结果文本和视频。 |
@@ -108,7 +108,7 @@ tmux attach -t subgoal
 python -B -m latent_subgoal_act.build_dataset output_dataset=pusht_g25_k5_h5.pt split=train
 ```
 
-作用：从原始 dataset 中采样当前状态、subgoal、goal，调用 LEWM 编码图像 latent，保存训练用 `.pt` 文件。
+作用：从原始 dataset 中采样当前状态、未来 subgoal 序列、goal，调用 LEWM 编码图像 latent，保存训练用 `.pt` 文件。
 
 主要可调参数：
 
@@ -128,13 +128,13 @@ python -B -m latent_subgoal_act.build_dataset output_dataset=pusht_g25_k5_h5.pt 
 | `eval.goal_offset_steps` | `25` | 起点到 goal 的步数。 |
 | `eval.img_size` | `224` | 图像输入尺寸。 |
 | `plan_config.action_block` | `5` | 动作块长度。 |
-| `plan_config.subgoal_horizon` | `5` | 起点到 subgoal 的步数。 |
+| `plan_config.subgoal_horizon` | `5` | 构建数据时保存的最大未来 latent 序列长度 `T_max`，默认保存 `z_{t+1:t+5}`。 |
 | `plan_config.cap_subgoal_at_goal` | `True` | 是否把 subgoal 限制在 goal 之前。 |
 
 输出 payload 主要包含：
 
 ```text
-z_t, z_g, z_h, action, action_raw, episode, step, subgoal_step, goal_step, metadata
+z_t, z_g, z_h_seq, z_h, action, action_raw, episode, step, subgoal_steps, subgoal_step, goal_step, metadata
 ```
 
 ## 2. 检查数据集
@@ -174,11 +174,13 @@ python -B -m latent_subgoal_act.train dataset=pusht_g25_k5_h5.pt output=pusht_su
 
 作用：读取 latent subgoal 数据集，训练 `LatentSubgoalACTPolicy`，并保存最佳 checkpoint。
 
+如果构建数据集时保存了较长的 `z_h_seq` 和 action chunk，训练时可以用 `subgoal_horizon` 截取前 T 个未来 latent，用 `action_horizon` 截取前 K 个动作。例如数据集中有 `z_{t+1:t+25}` 和 `a_{t:t+24}`，训练时可以分别设置 `subgoal_horizon=5/10/25`、`action_horizon=5/10/25`，不需要重新 build dataset。
+
 训练逻辑：
 
 1. 读取 `.pt` payload，并用 `LatentSubgoalACTDataset` 包装。
 2. 按 episode 划分 train/val，避免同一个 episode 同时出现在训练和验证中。
-3. 模型输入 `z_t` 和 `z_g`，先预测 `pred_z_h`，再用 `z_t/z_g/pred_z_h` 预测动作块。
+3. 模型输入 `z_t` 和 `z_g`，先预测 `pred_z_h_seq = z_hat_{t+1:t+T}`，再用 `z_t/z_g/pred_z_h_seq` 预测动作块。
 4. 默认不使用 `z_h_teacher`，避免 train/eval mismatch。
 5. 每个 epoch 记录 train/val 指标，保存验证分数最好的 `policy.pt`。
 
@@ -192,6 +194,8 @@ python -B -m latent_subgoal_act.train dataset=pusht_g25_k5_h5.pt output=pusht_su
 | `train_split` | `0.9` | episode 级训练集比例。 |
 | `device` | `cuda` | 训练设备。 |
 | `max_samples` | `None` | 限制最多训练样本数。 |
+| `subgoal_horizon` | `None` | 本次训练实际使用的未来 latent 长度；`None` 表示使用数据集中完整 `z_h_seq`。 |
+| `action_horizon` | `None` | 本次训练实际使用的动作块长度；`None` 表示使用数据集中完整 action chunk。 |
 | `loader.batch_size` | `256` | batch size。 |
 | `loader.num_workers` | `0` | DataLoader worker 数。 |
 | `model.hidden_dim` | `512` | Transformer hidden dim。 |
@@ -203,14 +207,14 @@ python -B -m latent_subgoal_act.train dataset=pusht_g25_k5_h5.pt output=pusht_su
 | `optim.weight_decay` | `1e-4` | AdamW weight decay。 |
 | `train.epochs` | `100` | 训练 epoch 数。 |
 | `train.grad_clip` | `1.0` | 梯度裁剪阈值。 |
-| `train.teacher_force_subgoal` | `False` | 是否用真实 `z_h` 训练 action head。 |
+| `train.teacher_force_subgoal` | `False` | 是否用真实 `z_h_seq` 训练 action head。 |
 | `loss.lambda_subgoal` | `1.0` | subgoal MSE 权重。 |
 | `loss.lambda_smooth` | `0.0` | 动作平滑 loss 权重。 |
 | `wm.enabled` | `True` | 是否加载 frozen LEWM/world model。 |
 | `wm.policy` | `pusht/lewm` | world model 名称。 |
 | `wm.history_size` | `1` | latent rollout 使用的历史长度。 |
-| `wm.lambda_rollout` | `0.0` | rollout latent 对真实 `z_h` 的 loss 权重。 |
-| `wm.lambda_align` | `0.0` | rollout latent 对 `pred_z_h` 的 loss 权重。 |
+| `wm.lambda_rollout` | `0.0` | rollout terminal latent 对真实 `z_h_seq[:,-1]` 的 loss 权重。 |
+| `wm.lambda_align` | `0.0` | rollout terminal latent 对 `pred_z_h_seq[:,-1]` 的 loss 权重。 |
 
 loss 组成：
 
@@ -239,6 +243,8 @@ total =
 nohup python -B -m latent_subgoal_act.train \
   dataset=pusht_g25_k5_h5.pt \
   output=pusht_subgoal_act_g25_k5_h5 \
+  subgoal_horizon=5 \
+  action_horizon=5 \
   train.epochs=100 \
   > train_subgoal.log 2>&1 &
 ```
@@ -269,8 +275,8 @@ python -B -m latent_subgoal_act.eval policy_ckpt=pusht_subgoal_act_g25_k5_h5/pol
 
 | 模式 | 配置 | 说明 |
 | --- | --- | --- |
-| rerank eval | `rerank.enabled=True`, `cem.enabled=False` | 默认模式。ACT 先输出动作块，再加噪声生成候选，用 LEWM rollout 选择最接近 target 的候选。 |
-| CEM eval | `cem.enabled=True` | 以 ACT 输出为初始化，用 CEM 迭代优化动作块。 |
+| rerank eval | `rerank.enabled=True`, `cem.enabled=False` | 默认模式。ACT 先输出动作块，再加噪声生成候选，用 LEWM rollout 选择最接近 `z_hat_{tT}` 的候选。 |
+| CEM eval | `cem.enabled=True` | 以 ACT 输出为初始化，用 CEM 迭代优化动作块，目标是最小化 rollout terminal latent 与 `z_hat_{tT}` 的 L2。 |
 | direct eval | `rerank.enabled=False`, `cem.enabled=False` | 附加/ablation。只执行 ACT 输出，不用 LEWM 做动作选择。 |
 
 主要可调参数：
@@ -294,7 +300,7 @@ python -B -m latent_subgoal_act.eval policy_ckpt=pusht_subgoal_act_g25_k5_h5/pol
 | `rerank.enabled` | `True` | 是否启用 rerank。 |
 | `rerank.num_candidates` | `16` | rerank 候选数。 |
 | `rerank.noise_std` | `0.2` | 候选动作噪声标准差。 |
-| `rerank.target` | `subgoal` | rerank 目标：`subgoal` 或 `goal`。 |
+| `rerank.target` | `subgoal` | rerank/CEM 目标：`subgoal` 表示 `z_hat_{tT}`，`goal` 表示 `z_g`。 |
 | `cem.enabled` | `False` | 是否启用 CEM。 |
 | `cem.num_iters` | `3` | CEM 迭代次数。 |
 | `cem.num_candidates` | `64` | 每轮候选数。 |
@@ -321,7 +327,9 @@ python -B -m latent_subgoal_act.eval policy_ckpt=pusht_subgoal_act_g25_k5_h5/pol
 # 1. 构建训练数据
 python -B -m latent_subgoal_act.build_dataset \
   output_dataset=pusht_g25_k5_h5.pt \
-  split=train
+  split=train \
+  plan_config.action_block=25 \
+  plan_config.subgoal_horizon=25
 
 # 2. 检查数据
 python -B -m latent_subgoal_act.inspect_dataset \
@@ -331,7 +339,9 @@ python -B -m latent_subgoal_act.inspect_dataset \
 # 3. 训练
 python -B -m latent_subgoal_act.train \
   dataset=pusht_g25_k5_h5.pt \
-  output=pusht_subgoal_act_g25_k5_h5
+  output=pusht_subgoal_act_g25_k5_h5 \
+  subgoal_horizon=5 \
+  action_horizon=5
 
 # 4. 默认 rerank 评估
 python -B -m latent_subgoal_act.eval \
@@ -347,7 +357,7 @@ python -B -m latent_subgoal_act.eval \
 ## 常见注意事项
 
 1. `policy_ckpt` 可以写相对 experiment 路径，例如 `pusht_subgoal_act_g25_k5_h5/policy.pt`。
-2. `train.teacher_force_subgoal=False` 是当前推荐默认值，因为评估时没有真实 `z_h_teacher`，这样可以减少 train/eval mismatch。
+2. `train.teacher_force_subgoal=False` 是当前推荐默认值，因为评估时没有真实 `z_h_seq`，这样可以减少 train/eval mismatch。
 3. `wm.enabled=True` 只代表会加载 frozen world model；只有 `wm.lambda_rollout` 或 `wm.lambda_align` 大于 0 时，world model loss 才会影响训练。
 4. 评估默认是 rerank；direct eval 是附加 ablation，需要显式关闭 rerank 和 CEM。
 5. 如果不想生成 `__pycache__`，使用 `python -B` 或设置 `PYTHONDONTWRITEBYTECODE=1`。

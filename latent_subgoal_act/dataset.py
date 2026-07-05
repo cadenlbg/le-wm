@@ -22,14 +22,17 @@ class LatentSubgoalACTDataset(Dataset):
         return self.length
 
     def __getitem__(self, idx):
+        z_h_seq = self.payload.get("z_h_seq")
+        subgoal_steps = self.payload.get("subgoal_steps")
         return {
             "z_t": self.payload["z_t"][idx],
             "z_g": self.payload["z_g"][idx],
             "z_h": self.payload["z_h"][idx],
+            "z_h_seq": z_h_seq[idx] if z_h_seq is not None else self.payload["z_h"][idx].unsqueeze(0),
             "action": self.payload["action"][idx],
             "episode": self.payload["episode"][idx],
             "step": self.payload["step"][idx],
             "goal_step": self.payload["goal_step"][idx],
             "subgoal_step": self.payload["subgoal_step"][idx],
+            "subgoal_steps": subgoal_steps[idx] if subgoal_steps is not None else self.payload["subgoal_step"][idx].unsqueeze(0),
         }
-

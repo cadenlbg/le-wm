@@ -125,6 +125,14 @@ def _fixed_offset_indices(dataset, goal_offset, action_horizon, subgoal_horizon,
     return start_indices, goal_indices, subgoal_indices
 
 
+def _future_subgoal_indices(start_indices, goal_indices, subgoal_horizon, cap_subgoal_at_goal):
+    offsets = np.arange(1, int(subgoal_horizon) + 1, dtype=np.int64)
+    future = start_indices[:, None] + offsets[None, :]
+    if cap_subgoal_at_goal:
+        future = np.minimum(future, goal_indices[:, None])
+    return future
+
+
 def _goal_anchored_indices(dataset, goal_offset, action_horizon, subgoal_horizon, goal_stride, cap_subgoal_at_goal, episode_subset=None):
     col_name = _episode_column(dataset)
     episode_idx = dataset.get_col_data(col_name)
@@ -231,8 +239,25 @@ def run(cfg: DictConfig):
     model = model.to(device).eval().requires_grad_(False)
     model.interpolate_pos_encoding = True
 
+    subgoal_sequence_indices = _future_subgoal_indices(
+        valid_indices,
+        goal_indices,
+        subgoal_horizon,
+        bool(cfg.plan_config.cap_subgoal_at_goal),
+    )
+
     z_t = _encode_indices(model, dataset, transform, valid_indices, int(cfg.encode_batch_size), device, "encoding z_t")
-    z_h = _encode_indices(model, dataset, transform, subgoal_indices, int(cfg.encode_batch_size), device, "encoding z_h")
+    z_h_seq_flat = _encode_indices(
+        model,
+        dataset,
+        transform,
+        subgoal_sequence_indices.reshape(-1),
+        int(cfg.encode_batch_size),
+        device,
+        "encoding z_h_seq",
+    )
+    z_h_seq = z_h_seq_flat.reshape(len(valid_indices), subgoal_horizon, -1)
+    z_h = z_h_seq[:, -1]
     z_g = _encode_indices(model, dataset, transform, goal_indices, int(cfg.encode_batch_size), device, "encoding z_g")
 
     action_raw, action = _action_chunks(dataset, valid_indices, action_horizon, action_scaler)
@@ -244,11 +269,13 @@ def run(cfg: DictConfig):
         "z_t": z_t.float(),
         "z_g": z_g.float(),
         "z_h": z_h.float(),
+        "z_h_seq": z_h_seq.float(),
         "action": torch.from_numpy(action),
         "action_raw": torch.from_numpy(action_raw),
         "episode": torch.as_tensor(episode_idx[valid_indices], dtype=torch.long),
         "step": torch.as_tensor(step_idx[valid_indices], dtype=torch.long),
         "subgoal_step": torch.as_tensor(step_idx[subgoal_indices], dtype=torch.long),
+        "subgoal_steps": torch.as_tensor(step_idx[subgoal_sequence_indices], dtype=torch.long),
         "goal_step": torch.as_tensor(step_idx[goal_indices], dtype=torch.long),
         "metadata": {
             "config": OmegaConf.to_container(cfg, resolve=True),
