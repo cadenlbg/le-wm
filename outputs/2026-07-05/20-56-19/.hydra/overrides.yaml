@@ -1,0 +1,11 @@
+- policy=pusht/lewm
+- seed=42
+- eval.num_eval=10
+- eval.goal_offset_steps=25
+- eval.eval_budget=50
+- plan_config.receding_horizon=1
+- solver.num_samples=32
+- solver.n_steps=3
+- solver.topk=8
+- solver.var_scale=1.0
+- output.filename=pusht_baseline_cem_light_seed42_results.txt
