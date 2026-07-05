@@ -64,11 +64,13 @@ def _transform_images(transform, images):
 
 @torch.no_grad()
 def _encode_indices(model, dataset, transform, indices, batch_size, device, desc):
+    indices = np.asarray(indices, dtype=np.int64)
+    unique_indices, inverse = np.unique(indices, return_inverse=True)
     chunks = []
     model.eval()
-    progress = tqdm(total=len(indices), desc=desc, unit="sample") if tqdm is not None else None
-    for start in range(0, len(indices), batch_size):
-        batch_indices = indices[start : start + batch_size]
+    progress = tqdm(total=len(unique_indices), desc=desc, unit="sample") if tqdm is not None else None
+    for start in range(0, len(unique_indices), batch_size):
+        batch_indices = unique_indices[start : start + batch_size]
         rows = dataset.get_row_data(batch_indices)
         batch = _transform_images(transform, rows["pixels"])
         batch = batch.unsqueeze(1).to(device)
@@ -78,7 +80,8 @@ def _encode_indices(model, dataset, transform, indices, batch_size, device, desc
             progress.update(len(batch_indices))
     if progress is not None:
         progress.close()
-    return torch.cat(chunks, dim=0)
+    encoded_unique = torch.cat(chunks, dim=0)
+    return encoded_unique[torch.as_tensor(inverse, dtype=torch.long)]
 
 
 def _episode_split_ids(dataset, seed, test_fraction):

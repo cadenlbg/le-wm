@@ -42,7 +42,7 @@ def build_default_cfg() -> DictConfig:
             "train": {"epochs": 100, "grad_clip": 1.0, "teacher_force_subgoal": False},
             "loss": {"lambda_subgoal": 1.0, "lambda_smooth": 0.0},
             "wm": {
-                "enabled": False,
+                "enabled": True,
                 "policy": "pusht/lewm",
                 "history_size": 1,
                 "lambda_rollout": 0.0,

@@ -53,4 +53,3 @@ def resolve_dataset_path(path) -> Path:
             if hits:
                 return hits[0]
     raise FileNotFoundError(f"Could not resolve dataset path from {path}. Checked: {candidates}")
-
