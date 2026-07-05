@@ -134,6 +134,35 @@ python -B -m latent_subgoal_act.action_priors.eval_diffusion \
   sample.num_candidates=32
 ```
 
+Diffusion + CEM eval：
+
+```bash
+python -B -m latent_subgoal_act.action_priors.eval_diffusion_cem \
+  policy_ckpt=goal_diffusion_prior_g25_K5_ms128k/policy.pt \
+  eval.num_eval=10 \
+  eval.goal_offset_steps=25 \
+  eval.eval_budget=50 \
+  plan_config.receding_horizon=1 \
+  world.num_envs=10 \
+  diffusion.num_candidates=64 \
+  diffusion.topk=8 \
+  cem.num_iters=3 \
+  cem.num_candidates=32 \
+  cem.elite_frac=0.25 \
+  cem.min_std=0.05 \
+  cem.std_scale=1.0
+```
+
+Diffusion + CEM 的流程：
+
+```text
+1. diffusion 先采样 diffusion.num_candidates 条 action chunks
+2. LEWM rollout 到 z_g，选 cost 最低的 diffusion.topk 条
+3. 用 top-k 的 mean/std 初始化 CEM
+4. CEM 再迭代采样、筛 elite、更新 mean/std
+5. 执行最终 best action chunk 的前 receding_horizon 步
+```
+
 ## 对比意义
 
 这两个 baseline 都测试同一个问题：
@@ -151,4 +180,3 @@ Deterministic prior:
 Diffusion prior:
   直接学习 action chunk 分布，多样化采样后用 LEWM rerank。
 ```
-
