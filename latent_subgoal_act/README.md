@@ -245,7 +245,7 @@ nohup python -B -m latent_subgoal_act.train \
   output=pusht_subgoal_act_g25_k5_h5 \
   subgoal_horizon=5 \
   action_horizon=5 \
-  train.epochs=100 \
+  train.epochs=200 \
   > train_subgoal.log 2>&1 &
 ```
 
