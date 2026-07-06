@@ -126,6 +126,14 @@ warmup = 500 steps
 EMA warmup schedule
 ```
 
+Checkpoint files:
+
+```text
+checkpoints/best.pt                    lowest val_loss checkpoint
+checkpoints/latest.pt                  latest periodic checkpoint
+checkpoints/epoch=0100-val_loss=*.pt   non-overwritten periodic snapshots
+```
+
 ## 5. Eval
 
 Evaluation is closed-loop.
@@ -216,7 +224,7 @@ CUDA_VISIBLE_DEVICES=4 python -B -m latent_subgoal_act.lewm_diffusion_policy.tra
   history_size=2 \
   policy.down_dims=[128,256,512] \
   training.num_epochs=200 \
-  training.checkpoint_every=10 \
+  training.checkpoint_every=100 \
   dataloader.batch_size=256 \
   val_dataloader.batch_size=256 \
   logging.mode=online \
@@ -276,7 +284,7 @@ CUDA_VISIBLE_DEVICES=4 python -B -m latent_subgoal_act.lewm_diffusion_policy.tra
   history_size=2 \
   policy.down_dims=[128,256,512] \
   training.num_epochs=500 \
-  training.checkpoint_every=25 \
+  training.checkpoint_every=100 \
   dataloader.batch_size=256 \
   val_dataloader.batch_size=256 \
   logging.mode=online \
@@ -312,4 +320,3 @@ train_loss decreases but val_loss rises early -> overfitting or condition mismat
 val_loss stays near 1.0 -> denoiser is not learning much
 eval improves with CEM but not rerank -> diffusion samples are useful but not precise enough
 ```
-

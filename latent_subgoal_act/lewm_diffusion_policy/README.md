@@ -11,6 +11,7 @@ EMA with Diffusion Policy warmup schedule
 AdamW betas=(0.95, 0.999)
 cosine LR scheduler with warmup
 checkpoints/best.pt and checkpoints/latest.pt
+non-overwritten checkpoints/epoch=XXXX-val_loss=*.pt snapshots
 ```
 
 The official image observation encoder is replaced by latent condition:
@@ -57,7 +58,7 @@ CUDA_VISIBLE_DEVICES=4 python -B -m latent_subgoal_act.lewm_diffusion_policy.tra
   history_size=2 \
   policy.down_dims=[128,256,512] \
   training.num_epochs=100 \
-  training.checkpoint_every=10 \
+  training.checkpoint_every=100 \
   dataloader.batch_size=256 \
   val_dataloader.batch_size=256 \
   device=cuda

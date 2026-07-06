@@ -97,8 +97,9 @@ def build_default_cfg():
                 "lr_scheduler": "cosine",
                 "lr_warmup_steps": 500,
                 "use_ema": True,
-                "checkpoint_every": 50,
+                "checkpoint_every": 100,
                 "val_every": 1,
+                "sample_every": 5,
                 "max_train_steps": None,
                 "max_val_steps": None,
                 "tqdm_interval_sec": 1.0,
@@ -196,9 +197,11 @@ def run(cfg: DictConfig):
             tags=list(cfg.logging.tags),
             config=OmegaConf.to_container(cfg, resolve=True),
         )
+        wandb.config.update({"output_dir": str(output)})
 
     best_val = float("inf")
     global_step = 0
+    train_sampling_batch = None
     for epoch in range(int(cfg.training.num_epochs)):
         model.train()
         train_losses = []
@@ -206,6 +209,8 @@ def run(cfg: DictConfig):
         optimizer.zero_grad(set_to_none=True)
         for batch_idx, batch in enumerate(iterator):
             batch = move_batch(batch, device)
+            if train_sampling_batch is None:
+                train_sampling_batch = {key: value.detach().cpu() if torch.is_tensor(value) else value for key, value in batch.items()}
             raw_loss = model.compute_loss(batch, scheduler, normalizer)
             loss = raw_loss / int(cfg.training.gradient_accumulate_every)
             loss.backward()
@@ -233,6 +238,17 @@ def run(cfg: DictConfig):
             "train_loss": float(np.mean(train_losses)) if train_losses else None,
             "val_loss": val_loss,
         }
+        if train_sampling_batch is not None and epoch % int(cfg.training.sample_every) == 0:
+            with torch.no_grad():
+                sample_batch = move_batch(train_sampling_batch, device)
+                sample = eval_model.conditional_sample(
+                    sample_batch["z_history"],
+                    sample_batch.get("z_g"),
+                    scheduler,
+                    num_samples=1,
+                ).squeeze(1)
+                pred_action = normalizer.unnormalize(sample)
+                record["train_action_mse_error"] = torch.nn.functional.mse_loss(pred_action, sample_batch["action"]).item()
         print(record)
         with metrics_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
@@ -253,6 +269,8 @@ def run(cfg: DictConfig):
         }
         if epoch % int(cfg.training.checkpoint_every) == 0:
             torch.save(save_payload, ckpt_dir / "latest.pt")
+            val_tag = "nan" if val_loss is None else f"{val_loss:.6f}"
+            torch.save(save_payload, ckpt_dir / f"epoch={epoch:04d}-val_loss={val_tag}.pt")
         if val_loss is not None and val_loss < best_val:
             best_val = val_loss
             torch.save(save_payload, ckpt_dir / "best.pt")
