@@ -73,6 +73,9 @@ class GoalDiffusionPriorWorldPolicy(PixelEncoderMixin):
     def __call__(self, info: Dict[str, Any]):
         return self.act(info)
 
+    def get_action(self, info: Dict[str, Any]):
+        return self.act(info)
+
     @torch.no_grad()
     def act(self, info: Dict[str, Any]):
         if self._action_buffer:
@@ -191,4 +194,3 @@ if __name__ == "__main__":
     import sys
 
     run(OmegaConf.from_cli(sys.argv[1:]))
-

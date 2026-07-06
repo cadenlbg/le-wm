@@ -43,22 +43,27 @@ def build_default_cfg() -> DictConfig:
             "ema": {"enabled": True, "decay": 0.995},
             "optim": {"lr": 1e-4, "weight_decay": 1e-6},
             "train": {"epochs": 400, "grad_clip": 1.0},
+            "eval": {"fixed_noise": True, "noise_seed": 12345},
             "log": {"print_every_factor": 1.1, "print_first_n": 5},
         }
     )
 
 
-def _run_epoch(model, schedule, normalizer, loader, optimizer, ema, device, cfg, train):
+def _run_epoch(model, schedule, normalizer, loader, optimizer, ema, device, cfg, train, epoch=0):
     model.train(train)
     totals = {}
     n_batches = 0
     iterator = tqdm(loader, desc="train" if train else "eval", leave=False, unit="batch") if tqdm is not None else loader
+    if train or not bool(cfg.eval.fixed_noise):
+        generator = None
+    else:
+        generator = torch.Generator(device=device).manual_seed(int(cfg.eval.noise_seed))
     for batch in iterator:
         batch = move_batch(batch, device)
         action = normalizer.normalize(batch["action"])
         batch_size = action.shape[0]
-        step = torch.randint(0, int(cfg.diffusion.num_steps), (batch_size,), device=device)
-        noise = torch.randn_like(action)
+        step = torch.randint(0, int(cfg.diffusion.num_steps), (batch_size,), device=device, generator=generator)
+        noise = torch.randn(action.shape, device=device, dtype=action.dtype, generator=generator)
         noisy_action = schedule.add_noise(action, step, noise)
         with torch.set_grad_enabled(train):
             pred_noise = model(noisy_action, step, batch["z_t"], batch["z_g"])
@@ -115,9 +120,9 @@ def run(cfg: DictConfig):
     best_val = float("inf")
     next_print_epoch = 1
     for epoch in range(1, int(cfg.train.epochs) + 1):
-        train_metrics = _run_epoch(model, schedule, normalizer, train_loader, optimizer, ema, device, cfg, True)
+        train_metrics = _run_epoch(model, schedule, normalizer, train_loader, optimizer, ema, device, cfg, True, epoch=epoch)
         eval_model = ema.model if ema is not None else model
-        val_metrics = _run_epoch(eval_model, schedule, normalizer, val_loader, None, None, device, cfg, False)
+        val_metrics = _run_epoch(eval_model, schedule, normalizer, val_loader, None, None, device, cfg, False, epoch=epoch)
         record = {
             "epoch": epoch,
             **{f"train/{k}": v for k, v in train_metrics.items()},
@@ -149,4 +154,3 @@ if __name__ == "__main__":
     import sys
 
     run(OmegaConf.from_cli(sys.argv[1:]))
-

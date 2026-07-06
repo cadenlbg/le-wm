@@ -23,7 +23,7 @@ The dataset action is already standardized by `build_dataset.py`, so `normalizer
 ## Train
 
 ```bash
-CUDA_VISIBLE_DEVICES=2 python -B -m latent_subgoal_act.dp_latent_prior.train \
+CUDA_VISIBLE_DEVICES=4 python -B -m latent_subgoal_act.dp_latent_prior.train \
   dataset=pusht_fixed_g25_k25_t25_ms_128k_train.pt \
   output=dp_latent_prior_g25_T25_ms128k \
   prediction_horizon=25 \
@@ -32,10 +32,26 @@ CUDA_VISIBLE_DEVICES=2 python -B -m latent_subgoal_act.dp_latent_prior.train \
   device=cuda
 ```
 
+If validation loss keeps rising while train loss keeps falling, use a smaller and more regularized run:
+
+```bash
+CUDA_VISIBLE_DEVICES=4 python -B -m latent_subgoal_act.dp_latent_prior.train \
+  dataset=pusht_fixed_g25_k25_t25_ms_128k_train.pt \
+  output=dp_latent_prior_g25_T25_ms128k_reg \
+  prediction_horizon=25 \
+  model.down_dims=[128,256,512] \
+  optim.lr=3e-5 \
+  optim.weight_decay=1e-4 \
+  train.epochs=200 \
+  loader.batch_size=256 \
+  eval.fixed_noise=True \
+  device=cuda
+```
+
 Smaller smoke:
 
 ```bash
-CUDA_VISIBLE_DEVICES=2 python -B -m latent_subgoal_act.dp_latent_prior.train \
+CUDA_VISIBLE_DEVICES=4 python -B -m latent_subgoal_act.dp_latent_prior.train \
   dataset=pusht_fixed_g25_k25_t25_ms_128k_train.pt \
   output=dp_latent_prior_g25_T25_smoke \
   prediction_horizon=25 \
@@ -48,7 +64,7 @@ CUDA_VISIBLE_DEVICES=2 python -B -m latent_subgoal_act.dp_latent_prior.train \
 ## Eval: Diffusion Rerank
 
 ```bash
-CUDA_VISIBLE_DEVICES=2 python -B -m latent_subgoal_act.dp_latent_prior.eval \
+CUDA_VISIBLE_DEVICES=4 python -B -m latent_subgoal_act.dp_latent_prior.eval \
   policy_ckpt=dp_latent_prior_g25_T25_ms128k/policy.pt \
   eval.num_eval=10 \
   eval.goal_offset_steps=25 \
@@ -63,7 +79,7 @@ CUDA_VISIBLE_DEVICES=2 python -B -m latent_subgoal_act.dp_latent_prior.eval \
 ## Eval: Diffusion + CEM
 
 ```bash
-CUDA_VISIBLE_DEVICES=2 python -B -m latent_subgoal_act.dp_latent_prior.eval \
+CUDA_VISIBLE_DEVICES=4 python -B -m latent_subgoal_act.dp_latent_prior.eval \
   policy_ckpt=dp_latent_prior_g25_T25_ms128k/policy.pt \
   eval.num_eval=10 \
   eval.goal_offset_steps=25 \
@@ -80,4 +96,3 @@ CUDA_VISIBLE_DEVICES=2 python -B -m latent_subgoal_act.dp_latent_prior.eval \
   cem.std_scale=1.0 \
   device=cuda
 ```
-
