@@ -43,6 +43,7 @@ def build_default_cfg() -> DictConfig:
                 ],
             },
             "output": {"filename": "goal_action_prior_results.txt"},
+            "prior": {"mode": "learned"},
             "rerank": {"enabled": True, "num_candidates": 16, "noise_std": 0.2},
             "cem": {"enabled": False, "num_iters": 3, "num_candidates": 64, "elite_frac": 0.1, "init_std": 0.5, "min_std": 0.05},
         }
@@ -68,6 +69,7 @@ class GoalActionPriorWorldPolicy(PixelEncoderMixin):
         cem_elite_frac=0.1,
         cem_init_std=0.5,
         cem_min_std=0.05,
+        prior_mode="learned",
     ):
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         self.lewm_encoder = lewm_encoder.to(self.device).eval().requires_grad_(False)
@@ -85,6 +87,7 @@ class GoalActionPriorWorldPolicy(PixelEncoderMixin):
         self.cem_elite_frac = float(cem_elite_frac)
         self.cem_init_std = float(cem_init_std)
         self.cem_min_std = float(cem_min_std)
+        self.prior_mode = str(prior_mode)
         self._action_buffer = deque()
 
     def reset(self, *args, **kwargs):
@@ -109,6 +112,10 @@ class GoalActionPriorWorldPolicy(PixelEncoderMixin):
         z_t = self.encode_info_pixels(info, self.PIXEL_KEYS, "pixels")
         z_g = self.encode_info_pixels(info, self.GOAL_KEYS, "goal")
         action = self.action_prior(z_t, z_g)
+        if self.prior_mode == "zero":
+            action = torch.zeros_like(action)
+        elif self.prior_mode != "learned":
+            raise ValueError(f"Unknown prior.mode={self.prior_mode}. Use learned or zero.")
         if self.cem_enabled:
             action = self._cem(z_t, z_g, action)
         elif self.rerank_enabled:
@@ -225,6 +232,7 @@ def run(cfg: DictConfig):
         cem_elite_frac=float(cfg.cem.elite_frac),
         cem_init_std=float(cfg.cem.init_std),
         cem_min_std=float(cfg.cem.min_std),
+        prior_mode=str(cfg.prior.mode),
     )
 
     episode_len = get_episodes_length(dataset, ep_indices)
