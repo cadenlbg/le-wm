@@ -7,9 +7,10 @@ import math
 import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
+from torch.utils.data import Dataset
 from torch.utils.data import DataLoader, Subset
 
-from latent_subgoal_act.action_priors.common import GoalActionDataset, episode_split, move_batch
+from latent_subgoal_act.action_priors.common import episode_split, move_batch
 from latent_subgoal_act.lewm_diffusion_policy.model import DDPMScheduler, EMAModel, LeWMLatentDiffusionPolicy, LinearActionNormalizer
 from latent_subgoal_act.shared import resolve_dataset_path, resolve_experiment_path
 
@@ -17,6 +18,45 @@ try:
     from tqdm.auto import tqdm
 except ImportError:  # pragma: no cover
     tqdm = None
+
+
+class LeWMDiffusionDataset(Dataset):
+    def __init__(self, payload, horizon: int, history_size: int = 2, max_samples=None):
+        self.payload = payload
+        self.horizon = int(horizon)
+        self.history_size = int(history_size)
+        available = int(payload["action"].shape[1])
+        if self.horizon > available:
+            raise ValueError(f"Requested horizon={self.horizon}, but dataset only has {available} action steps.")
+        self.length = int(payload["z_t"].shape[0])
+        if max_samples is not None:
+            self.length = min(self.length, int(max_samples))
+        self.index_by_episode_step = {
+            (int(ep), int(step)): idx
+            for idx, (ep, step) in enumerate(zip(payload["episode"][: self.length].tolist(), payload["step"][: self.length].tolist()))
+        }
+
+    def __len__(self):
+        return self.length
+
+    def _history_indices(self, idx):
+        ep = int(self.payload["episode"][idx])
+        step = int(self.payload["step"][idx])
+        indices = []
+        for offset in range(self.history_size - 1, -1, -1):
+            candidate = self.index_by_episode_step.get((ep, step - offset), idx)
+            indices.append(candidate)
+        return indices
+
+    def __getitem__(self, idx):
+        hist_idx = self._history_indices(idx)
+        return {
+            "z_t": self.payload["z_t"][idx],
+            "z_history": self.payload["z_t"][hist_idx],
+            "z_g": self.payload["z_g"][idx],
+            "action": self.payload["action"][idx, : self.horizon],
+            "episode": self.payload["episode"][idx],
+        }
 
 
 def build_default_cfg():
@@ -28,8 +68,10 @@ def build_default_cfg():
             "train_split": 0.9,
             "device": "cuda",
             "max_samples": None,
-            "horizon": None,
-            "n_action_steps": 5,
+            "horizon": 16,
+            "n_action_steps": 8,
+            "history_size": 2,
+            "goal_condition": True,
             "dataloader": {"batch_size": 64, "num_workers": 0, "pin_memory": True, "shuffle": True},
             "val_dataloader": {"batch_size": 64, "num_workers": 0, "pin_memory": True, "shuffle": False},
             "policy": {
@@ -63,6 +105,12 @@ def build_default_cfg():
                 "grad_clip": 1.0,
             },
             "ema": {"update_after_step": 0, "inv_gamma": 1.0, "power": 0.75, "min_value": 0.0, "max_value": 0.9999},
+            "logging": {
+                "mode": "disabled",
+                "project": "lewm_diffusion_policy",
+                "name": None,
+                "tags": ["lewm", "diffusion_policy", "pusht"],
+            },
         }
     )
 
@@ -106,7 +154,7 @@ def run(cfg: DictConfig):
     available_horizon = int(payload["action"].shape[1])
     horizon = available_horizon if cfg.horizon is None else int(cfg.horizon)
     cfg.horizon = horizon
-    dataset = GoalActionDataset(payload, action_horizon=horizon, max_samples=cfg.max_samples)
+    dataset = LeWMDiffusionDataset(payload, horizon=horizon, history_size=int(cfg.history_size), max_samples=cfg.max_samples)
     metadata = payload["metadata"]
     train_idx, val_idx = episode_split(payload["episode"][: len(dataset)], cfg.train_split, int(cfg.seed))
     generator = torch.Generator().manual_seed(int(cfg.seed))
@@ -119,6 +167,8 @@ def run(cfg: DictConfig):
         "action_dim": metadata["action_dim"],
         "horizon": horizon,
         "n_action_steps": int(cfg.n_action_steps),
+        "history_size": int(cfg.history_size),
+        "goal_condition": bool(cfg.goal_condition),
         **OmegaConf.to_container(cfg.policy, resolve=True),
     }
     model = LeWMLatentDiffusionPolicy(**model_config).to(device)
@@ -134,6 +184,18 @@ def run(cfg: DictConfig):
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     OmegaConf.save(cfg, output / "config.yaml")
     metrics_path = output / "logs.json.txt"
+    wandb_run = None
+    if str(cfg.logging.mode) != "disabled":
+        import wandb
+
+        wandb_run = wandb.init(
+            dir=str(output),
+            project=str(cfg.logging.project),
+            name=cfg.logging.name,
+            mode=str(cfg.logging.mode),
+            tags=list(cfg.logging.tags),
+            config=OmegaConf.to_container(cfg, resolve=True),
+        )
 
     best_val = float("inf")
     global_step = 0
@@ -174,6 +236,8 @@ def run(cfg: DictConfig):
         print(record)
         with metrics_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
+        if wandb_run is not None:
+            wandb_run.log(record, step=global_step)
 
         save_payload = {
             "cfg": OmegaConf.to_container(cfg, resolve=True),
@@ -193,9 +257,11 @@ def run(cfg: DictConfig):
             best_val = val_loss
             torch.save(save_payload, ckpt_dir / "best.pt")
 
+    if wandb_run is not None:
+        wandb_run.finish()
+
 
 if __name__ == "__main__":
     import sys
 
     run(OmegaConf.from_cli(sys.argv[1:]))
-

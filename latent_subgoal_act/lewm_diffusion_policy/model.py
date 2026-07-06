@@ -320,6 +320,8 @@ class LeWMLatentDiffusionPolicy(nn.Module):
         action_dim: int,
         horizon: int,
         n_action_steps: int = 5,
+        history_size: int = 2,
+        goal_condition: bool = True,
         num_inference_steps: int = 100,
         diffusion_step_embed_dim: int = 128,
         down_dims: Sequence[int] = (512, 1024, 2048),
@@ -332,10 +334,13 @@ class LeWMLatentDiffusionPolicy(nn.Module):
         self.action_dim = int(action_dim)
         self.horizon = int(horizon)
         self.n_action_steps = int(n_action_steps)
+        self.history_size = int(history_size)
+        self.goal_condition = bool(goal_condition)
         self.num_inference_steps = int(num_inference_steps)
+        global_cond_dim = (self.history_size + (1 if self.goal_condition else 0)) * self.latent_dim
         self.model = ConditionalUnet1D(
             input_dim=action_dim,
-            global_cond_dim=2 * latent_dim,
+            global_cond_dim=global_cond_dim,
             diffusion_step_embed_dim=diffusion_step_embed_dim,
             down_dims=down_dims,
             kernel_size=kernel_size,
@@ -343,28 +348,44 @@ class LeWMLatentDiffusionPolicy(nn.Module):
             cond_predict_scale=cond_predict_scale,
         )
 
+    def make_global_cond(self, z_history: torch.Tensor, z_g: Optional[torch.Tensor] = None):
+        if z_history.ndim == 2:
+            z_history = z_history.unsqueeze(1).expand(-1, self.history_size, -1)
+        z_history = z_history[:, -self.history_size :]
+        if z_history.shape[1] < self.history_size:
+            pad = z_history[:, :1].expand(-1, self.history_size - z_history.shape[1], -1)
+            z_history = torch.cat([pad, z_history], dim=1)
+        pieces = [z_history.reshape(z_history.shape[0], -1)]
+        if self.goal_condition:
+            if z_g is None:
+                raise ValueError("z_g is required when goal_condition=True")
+            pieces.append(z_g)
+        return torch.cat(pieces, dim=-1)
+
     def compute_loss(self, batch, scheduler: DDPMScheduler, normalizer: LinearActionNormalizer):
         action = normalizer.normalize(batch["action"])
         batch_size = action.shape[0]
         noise = torch.randn_like(action)
         timesteps = torch.randint(0, scheduler.num_train_timesteps, (batch_size,), device=action.device).long()
         noisy_action = scheduler.add_noise(action, noise, timesteps)
-        global_cond = torch.cat([batch["z_t"], batch["z_g"]], dim=-1)
+        z_history = batch.get("z_history", batch["z_t"])
+        global_cond = self.make_global_cond(z_history, batch.get("z_g"))
         pred = self.model(noisy_action, timesteps, global_cond=global_cond)
         loss = F.mse_loss(pred, noise, reduction="none")
         return loss.reshape(batch_size, -1).mean(dim=1).mean()
 
     @torch.no_grad()
-    def conditional_sample(self, z_t, z_g, scheduler: DDPMScheduler, num_samples: int = 1, generator=None):
-        batch_size = z_t.shape[0]
+    def conditional_sample(self, z_history, z_g, scheduler: DDPMScheduler, num_samples: int = 1, generator=None):
+        if z_history.ndim == 2:
+            z_history = z_history.unsqueeze(1).expand(-1, self.history_size, -1)
+        batch_size = z_history.shape[0]
         num_samples = int(num_samples)
-        trajectory = torch.randn(batch_size * num_samples, self.horizon, self.action_dim, device=z_t.device, generator=generator)
-        flat_z_t = z_t.unsqueeze(1).expand(batch_size, num_samples, -1).reshape(batch_size * num_samples, -1)
-        flat_z_g = z_g.unsqueeze(1).expand(batch_size, num_samples, -1).reshape(batch_size * num_samples, -1)
-        global_cond = torch.cat([flat_z_t, flat_z_g], dim=-1)
+        trajectory = torch.randn(batch_size * num_samples, self.horizon, self.action_dim, device=z_history.device, generator=generator)
+        flat_z_history = z_history.unsqueeze(1).expand(batch_size, num_samples, -1, -1).reshape(batch_size * num_samples, z_history.shape[1], -1)
+        flat_z_g = z_g.unsqueeze(1).expand(batch_size, num_samples, -1).reshape(batch_size * num_samples, -1) if z_g is not None else None
+        global_cond = self.make_global_cond(flat_z_history, flat_z_g)
         scheduler.set_timesteps(self.num_inference_steps)
         for t in scheduler.timesteps:
             pred = self.model(trajectory, t, global_cond=global_cond)
             trajectory, _ = scheduler.step(pred, t, trajectory, generator=generator)
         return trajectory.reshape(batch_size, num_samples, self.horizon, self.action_dim)
-

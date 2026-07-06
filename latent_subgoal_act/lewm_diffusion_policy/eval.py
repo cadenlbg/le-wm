@@ -88,9 +88,11 @@ class LeWMDiffusionWorldPolicy(PixelEncoderMixin):
         if sample_seed is not None:
             self.generator = torch.Generator(device=self.device).manual_seed(int(sample_seed))
         self._action_buffer = deque()
+        self._latent_history = deque(maxlen=self.policy.history_size)
 
     def reset(self, *args, **kwargs):
         self._action_buffer.clear()
+        self._latent_history.clear()
 
     def set_env(self, envs):
         self.envs = envs
@@ -110,8 +112,10 @@ class LeWMDiffusionWorldPolicy(PixelEncoderMixin):
             return self._action_buffer.popleft()
         z_t = self.encode_info_pixels(info, self.PIXEL_KEYS, "pixels")
         z_g = self.encode_info_pixels(info, self.GOAL_KEYS, "goal")
+        self._latent_history.append(z_t)
+        z_history = self._stack_latent_history(z_t)
         candidates = self.policy.conditional_sample(
-            z_t,
+            z_history,
             z_g,
             self.scheduler,
             num_samples=self.num_candidates,
@@ -123,6 +127,12 @@ class LeWMDiffusionWorldPolicy(PixelEncoderMixin):
         action = self._inverse_dataset_scale(action).detach().cpu().numpy()
         self._fill_action_buffer(action)
         return self._action_buffer.popleft()
+
+    def _stack_latent_history(self, z_t):
+        history = list(self._latent_history)
+        while len(history) < self.policy.history_size:
+            history.insert(0, z_t)
+        return torch.stack(history[-self.policy.history_size :], dim=1)
 
     def _select_best(self, z_t, z_g, candidates):
         cost = self._cost(z_t, z_g, candidates)
@@ -266,4 +276,3 @@ if __name__ == "__main__":
     import sys
 
     run(OmegaConf.from_cli(sys.argv[1:]))
-

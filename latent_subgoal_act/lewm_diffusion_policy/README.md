@@ -17,7 +17,16 @@ The official image observation encoder is replaced by latent condition:
 
 ```text
 official: obs history -> obs_encoder -> global_cond
-ours:     concat(z_t, z_g) -> global_cond
+ours:     concat(z_{t-1}, z_t, z_g) -> global_cond
+```
+
+Defaults now follow the official Push-T setup more closely:
+
+```text
+horizon = 16
+n_action_steps = 8
+history_size = 2
+goal_condition = True
 ```
 
 ## Train
@@ -27,9 +36,10 @@ Official-scale run:
 ```bash
 CUDA_VISIBLE_DEVICES=4 python -B -m latent_subgoal_act.lewm_diffusion_policy.train \
   dataset=pusht_fixed_g25_k25_t25_ms_128k_train.pt \
-  output=lewm_dp_g25_h25_ms128k \
-  horizon=25 \
-  n_action_steps=5 \
+  output=lewm_dp_g25_h16_a8_hist2_ms128k \
+  horizon=16 \
+  n_action_steps=8 \
+  history_size=2 \
   training.num_epochs=3050 \
   dataloader.batch_size=64 \
   val_dataloader.batch_size=64 \
@@ -41,9 +51,10 @@ Practical short run:
 ```bash
 CUDA_VISIBLE_DEVICES=4 python -B -m latent_subgoal_act.lewm_diffusion_policy.train \
   dataset=pusht_fixed_g25_k25_t25_ms_128k_train.pt \
-  output=lewm_dp_g25_h25_ms128k_short \
-  horizon=25 \
-  n_action_steps=5 \
+  output=lewm_dp_g25_h16_a8_hist2_ms128k_short \
+  horizon=16 \
+  n_action_steps=8 \
+  history_size=2 \
   policy.down_dims=[128,256,512] \
   training.num_epochs=100 \
   training.checkpoint_every=10 \
@@ -58,8 +69,9 @@ Smoke:
 CUDA_VISIBLE_DEVICES=4 python -B -m latent_subgoal_act.lewm_diffusion_policy.train \
   dataset=pusht_fixed_g25_k25_t25_ms_128k_train.pt \
   output=lewm_dp_smoke \
-  horizon=25 \
-  n_action_steps=5 \
+  horizon=16 \
+  n_action_steps=8 \
+  history_size=2 \
   max_samples=4096 \
   policy.down_dims=[64,128,256] \
   training.num_epochs=2 \
@@ -75,11 +87,11 @@ CUDA_VISIBLE_DEVICES=4 python -B -m latent_subgoal_act.lewm_diffusion_policy.tra
 
 ```bash
 CUDA_VISIBLE_DEVICES=4 python -B -m latent_subgoal_act.lewm_diffusion_policy.eval \
-  policy_ckpt=lewm_dp_g25_h25_ms128k_short/checkpoints/best.pt \
+  policy_ckpt=lewm_dp_g25_h16_a8_hist2_ms128k_short/checkpoints/best.pt \
   eval.num_eval=10 \
   eval.goal_offset_steps=25 \
   eval.eval_budget=50 \
-  plan_config.execution_horizon=5 \
+  plan_config.execution_horizon=8 \
   world.num_envs=10 \
   sample.num_candidates=32 \
   cem.enabled=False \
@@ -91,11 +103,11 @@ CUDA_VISIBLE_DEVICES=4 python -B -m latent_subgoal_act.lewm_diffusion_policy.eva
 
 ```bash
 CUDA_VISIBLE_DEVICES=4 python -B -m latent_subgoal_act.lewm_diffusion_policy.eval \
-  policy_ckpt=lewm_dp_g25_h25_ms128k_short/checkpoints/best.pt \
+  policy_ckpt=lewm_dp_g25_h16_a8_hist2_ms128k_short/checkpoints/best.pt \
   eval.num_eval=10 \
   eval.goal_offset_steps=25 \
   eval.eval_budget=50 \
-  plan_config.execution_horizon=5 \
+  plan_config.execution_horizon=8 \
   world.num_envs=10 \
   sample.num_candidates=64 \
   cem.enabled=True \
@@ -108,4 +120,3 @@ CUDA_VISIBLE_DEVICES=4 python -B -m latent_subgoal_act.lewm_diffusion_policy.eva
   output.filename=lewm_dp_diffusion_cem_n10.txt \
   device=cuda
 ```
-
