@@ -1,0 +1,15 @@
+{
+  "os": "Linux-5.15.0-139-generic-x86_64-with-glibc2.31",
+  "python": "CPython 3.10.20",
+  "startedAt": "2026-07-06T10:43:51.027861Z",
+  "program": "<stdin>",
+  "git": {
+    "remote": "https://github.com/cadenlbg/le-wm.git",
+    "commit": "4a4fabc312c9175dac2900919d7977fdac081b3c"
+  },
+  "email": "2400010853@stu.pku.edu.cn",
+  "root": "/data/zflin/lewm_re/le-wm",
+  "host": "ubuntu-zlin-cc18",
+  "executable": "/data/zflin/software/miniconda3/envs/lewm/bin/python",
+  "writerId": "8o7vaijlkqz4szv7t2duy8b2mij4g1ph"
+}

@@ -1,0 +1,35 @@
+_wandb:
+    value:
+        cli_version: 0.28.0
+        e:
+            8o7vaijlkqz4szv7t2duy8b2mij4g1ph:
+                email: 2400010853@stu.pku.edu.cn
+                executable: /data/zflin/software/miniconda3/envs/lewm/bin/python
+                git:
+                    commit: 4a4fabc312c9175dac2900919d7977fdac081b3c
+                    remote: https://github.com/cadenlbg/le-wm.git
+                host: ubuntu-zlin-cc18
+                os: Linux-5.15.0-139-generic-x86_64-with-glibc2.31
+                program: <stdin>
+                python: CPython 3.10.20
+                root: /data/zflin/lewm_re/le-wm
+                startedAt: "2026-07-06T10:43:51.027861Z"
+                writerId: 8o7vaijlkqz4szv7t2duy8b2mij4g1ph
+        m: []
+        python_version: 3.10.20
+        t:
+            "3":
+                - 2
+                - 16
+            "4": 3.10.20
+            "5": 0.28.0
+            "12": 0.28.0
+            "13": linux-x86_64
+architecture:
+    value: CNN
+dataset:
+    value: CIFAR-100
+epochs:
+    value: 10
+learning_rate:
+    value: 0.02
