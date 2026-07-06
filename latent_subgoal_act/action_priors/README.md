@@ -112,33 +112,35 @@ L = MSE(pred_noise, noise)
 训练：
 
 ```bash
-python -B -m latent_subgoal_act.action_priors.train_diffusion \
+CUDA_VISIBLE_DEVICES=2 python -B -m latent_subgoal_act.action_priors.train_diffusion \
   dataset=pusht_fixed_g25_k25_t25_ms_128k_train.pt \
-  output=goal_diffusion_prior_g25_K5_ms128k \
-  action_horizon=5 \
+  output=goal_diffusion_prior_g25_K25_ms128k \
+  action_horizon=25 \
   diffusion.num_steps=50 \
-  train.epochs=200 \
-  loader.batch_size=256
+  train.epochs=400 \
+  loader.batch_size=256 \
+  device=cuda
 ```
 
 eval：
 
 ```bash
-python -B -m latent_subgoal_act.action_priors.eval_diffusion \
-  policy_ckpt=goal_diffusion_prior_g25_K5_ms128k/policy.pt \
+CUDA_VISIBLE_DEVICES=2 python -B -m latent_subgoal_act.action_priors.eval_diffusion \
+  policy_ckpt=goal_diffusion_prior_g25_K25_ms128k/policy.pt \
   eval.num_eval=10 \
   eval.goal_offset_steps=25 \
   eval.eval_budget=50 \
   plan_config.receding_horizon=1 \
   world.num_envs=10 \
-  sample.num_candidates=32
+  sample.num_candidates=32 \
+  device=cuda
 ```
 
 Diffusion + CEM eval：
 
 ```bash
-python -B -m latent_subgoal_act.action_priors.eval_diffusion_cem \
-  policy_ckpt=goal_diffusion_prior_g25_K5_ms128k/policy.pt \
+CUDA_VISIBLE_DEVICES=2 python -B -m latent_subgoal_act.action_priors.eval_diffusion_cem \
+  policy_ckpt=goal_diffusion_prior_g25_K25_ms128k/policy.pt \
   eval.num_eval=10 \
   eval.goal_offset_steps=25 \
   eval.eval_budget=50 \
@@ -150,7 +152,8 @@ python -B -m latent_subgoal_act.action_priors.eval_diffusion_cem \
   cem.num_candidates=32 \
   cem.elite_frac=0.25 \
   cem.min_std=0.05 \
-  cem.std_scale=1.0
+  cem.std_scale=1.0 \
+  device=cuda
 ```
 
 Diffusion + CEM 的流程：

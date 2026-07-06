@@ -277,3 +277,58 @@ python -B -m latent_subgoal_act.eval \
   rerank.enabled=False \
   cem.enabled=False
 ```
+
+## 6. Diffusion Action Prior, K=25
+
+状态：待运行  
+命令记录时间：2026-07-06 03:08:38 +08:00
+
+实验内容：
+```text
+训练 goal-conditioned diffusion action prior：输入 z_t 和 z_g，输出 25-step action chunk 的动作分布。
+这次对齐 128k dataset 中的最大动作 chunk：goal_offset_steps=25, action_horizon=25。
+训练使用 2 号 GPU，epoch 从 200 提高到 400。
+```
+
+训练命令：
+```bash
+CUDA_VISIBLE_DEVICES=2 python -B -m latent_subgoal_act.action_priors.train_diffusion \
+  dataset=pusht_fixed_g25_k25_t25_ms_128k_train.pt \
+  output=goal_diffusion_prior_g25_K25_ms128k \
+  action_horizon=25 \
+  diffusion.num_steps=50 \
+  train.epochs=400 \
+  loader.batch_size=256 \
+  device=cuda
+```
+
+关键参数：
+| 参数 | 值 |
+| --- | --- |
+| `CUDA_VISIBLE_DEVICES` | `2` |
+| `dataset` | `pusht_fixed_g25_k25_t25_ms_128k_train.pt` |
+| `output` | `goal_diffusion_prior_g25_K25_ms128k` |
+| `action_horizon` | `25` |
+| `diffusion.num_steps` | `50` |
+| `train.epochs` | `400` |
+| `loader.batch_size` | `256` |
+| `device` | `cuda` |
+
+后续 Diffusion + CEM eval 命令：
+```bash
+CUDA_VISIBLE_DEVICES=2 python -B -m latent_subgoal_act.action_priors.eval_diffusion_cem \
+  policy_ckpt=goal_diffusion_prior_g25_K25_ms128k/policy.pt \
+  eval.num_eval=10 \
+  eval.goal_offset_steps=25 \
+  eval.eval_budget=50 \
+  plan_config.receding_horizon=1 \
+  world.num_envs=10 \
+  diffusion.num_candidates=64 \
+  diffusion.topk=8 \
+  cem.num_iters=3 \
+  cem.num_candidates=32 \
+  cem.elite_frac=0.25 \
+  cem.min_std=0.05 \
+  cem.std_scale=1.0 \
+  device=cuda
+```
