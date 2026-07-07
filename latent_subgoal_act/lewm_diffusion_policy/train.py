@@ -97,6 +97,7 @@ def build_default_cfg():
                 "lr_scheduler": "cosine",
                 "lr_warmup_steps": 500,
                 "use_ema": True,
+                "rollout_every": 50,
                 "checkpoint_every": 100,
                 "val_every": 1,
                 "sample_every": 5,
@@ -111,6 +112,28 @@ def build_default_cfg():
                 "project": "lewm_diffusion_policy",
                 "name": None,
                 "tags": ["lewm", "diffusion_policy", "pusht"],
+            },
+            "rollout": {
+                "enabled": False,
+                "num_eval": 6,
+                "num_vis": 4,
+                "goal_offset_steps": 25,
+                "eval_budget": 50,
+                "img_size": 224,
+                "dataset_name": "pusht_expert_train",
+                "lewm_policy": "pusht/lewm",
+                "env_name": "swm/PushT-v1",
+                "execution_horizon": 8,
+                "sample_num_candidates": 8,
+                "test_start_seed": 100000,
+                "fps": 10,
+                "cem_enabled": False,
+                "cem_diffusion_topk": 8,
+                "cem_num_iters": 3,
+                "cem_num_candidates": 32,
+                "cem_elite_frac": 0.25,
+                "cem_min_std": 0.05,
+                "cem_std_scale": 1.0,
             },
         }
     )
@@ -143,6 +166,202 @@ def _run_validation(model, scheduler, normalizer, loader, device, cfg):
     if not losses:
         return None
     return torch.stack(losses).mean().item()
+
+
+def _wandb_key(prefix: str, key: str) -> str:
+    return key if key.startswith(prefix + "/") else f"{prefix}/{key}"
+
+
+def _as_scalar(value):
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return float(value)
+    if torch.is_tensor(value) and value.numel() == 1:
+        return float(value.detach().cpu().item())
+    if isinstance(value, np.ndarray) and value.size == 1:
+        return float(value.reshape(-1)[0])
+    return None
+
+
+def _as_float_sequence(value):
+    if torch.is_tensor(value):
+        value = value.detach().cpu().numpy()
+    if isinstance(value, np.ndarray):
+        value = value.reshape(-1).tolist()
+    if not isinstance(value, (list, tuple)):
+        return None
+    scalars = []
+    for item in value:
+        scalar = _as_scalar(item)
+        if scalar is None:
+            return None
+        scalars.append(scalar)
+    return scalars
+
+
+def _iter_video_paths(value):
+    suffixes = {".mp4", ".gif", ".webm"}
+    if isinstance(value, (str, bytes)):
+        path = str(value)
+        if any(path.lower().endswith(suffix) for suffix in suffixes):
+            yield path
+        return
+    if hasattr(value, "__fspath__"):
+        path = value.__fspath__()
+        if any(str(path).lower().endswith(suffix) for suffix in suffixes):
+            yield path
+        return
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _iter_video_paths(item)
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _iter_video_paths(item)
+
+
+def _find_score_sequence(metrics):
+    if not isinstance(metrics, dict):
+        return None
+    preferred_keys = (
+        "max_rewards",
+        "max_reward",
+        "scores",
+        "score",
+        "rewards",
+        "reward",
+        "successes",
+        "success",
+    )
+    for key in preferred_keys:
+        if key in metrics:
+            sequence = _as_float_sequence(metrics[key])
+            if sequence:
+                return sequence
+    for key, value in metrics.items():
+        if any(name in str(key).lower() for name in ("reward", "score", "success")):
+            sequence = _as_float_sequence(value)
+            if sequence:
+                return sequence
+    return None
+
+
+def _run_rollout(eval_model, scheduler, normalizer, metadata, cfg, output, device, epoch):
+    import wandb
+    import stable_worldmodel as swm
+
+    from eval import get_dataset, get_episodes_length, img_transform
+    from latent_subgoal_act.lewm_diffusion_policy.eval import LeWMDiffusionWorldPolicy
+
+    rollout_dir = output / "rollouts" / f"epoch_{int(epoch):04d}"
+    media_dir = rollout_dir / "media"
+    rollout_dir.mkdir(parents=True, exist_ok=True)
+    media_dir.mkdir(parents=True, exist_ok=True)
+    eval_cfg = OmegaConf.create(
+        {
+            "cache_dir": None,
+            "dataset": {"keys_to_cache": ["action", "proprio", "state"]},
+            "eval": {
+                "img_size": int(cfg.rollout.img_size),
+                "dataset_name": cfg.rollout.dataset_name,
+                "goal_offset_steps": int(cfg.rollout.goal_offset_steps),
+                "eval_budget": int(cfg.rollout.eval_budget),
+                "callables": [
+                    {"method": "_set_state", "args": {"state": {"value": "state"}}},
+                    {"method": "_set_goal_state", "args": {"goal_state": {"value": "goal_state"}}},
+                ],
+            },
+        }
+    )
+    world = swm.World(
+        env_name=cfg.rollout.env_name,
+        num_envs=int(cfg.rollout.num_eval),
+        max_episode_steps=2 * int(cfg.rollout.eval_budget),
+        image_shape=(224, 224),
+    )
+    transform = {"pixels": img_transform(eval_cfg), "goal": img_transform(eval_cfg)}
+    dataset = get_dataset(eval_cfg, cfg.rollout.dataset_name)
+    col_name = "episode_idx" if "episode_idx" in dataset.column_names else "ep_idx"
+    ep_indices, _ = np.unique(dataset.get_col_data(col_name), return_index=True)
+
+    lewm = swm.wm.utils.load_pretrained(cfg.rollout.lewm_policy).to(device).eval().requires_grad_(False)
+    lewm.interpolate_pos_encoding = True
+    cem_cfg = OmegaConf.create(
+        {
+            "enabled": bool(cfg.rollout.cem_enabled),
+            "diffusion_topk": int(cfg.rollout.cem_diffusion_topk),
+            "num_iters": int(cfg.rollout.cem_num_iters),
+            "num_candidates": int(cfg.rollout.cem_num_candidates),
+            "elite_frac": float(cfg.rollout.cem_elite_frac),
+            "min_std": float(cfg.rollout.cem_min_std),
+            "std_scale": float(cfg.rollout.cem_std_scale),
+        }
+    )
+    policy = LeWMDiffusionWorldPolicy(
+        lewm_encoder=lewm,
+        policy=eval_model,
+        scheduler=scheduler,
+        normalizer=normalizer,
+        transform=transform,
+        action_mean=metadata.get("action_mean"),
+        action_scale=metadata.get("action_scale"),
+        device=str(device),
+        execution_horizon=int(cfg.rollout.execution_horizon),
+        num_candidates=int(cfg.rollout.sample_num_candidates),
+        sample_seed=int(cfg.seed) + int(epoch),
+        cem_cfg=cem_cfg,
+    )
+
+    episode_len = get_episodes_length(dataset, ep_indices)
+    max_start_idx = episode_len - int(cfg.rollout.goal_offset_steps) - 1
+    max_start_idx_dict = {ep_id: max_start_idx[i] for i, ep_id in enumerate(ep_indices)}
+    max_start_per_row = np.array([max_start_idx_dict[ep_id] for ep_id in dataset.get_col_data(col_name)])
+    valid_mask = dataset.get_col_data("step_idx") <= max_start_per_row
+    valid_indices = np.nonzero(valid_mask)[0]
+    rng = np.random.default_rng(int(cfg.seed) + int(epoch))
+    random_episode_indices = np.sort(rng.choice(valid_indices, size=int(cfg.rollout.num_eval), replace=False))
+    eval_episodes = dataset.get_row_data(random_episode_indices)[col_name]
+    eval_start_idx = dataset.get_row_data(random_episode_indices)["step_idx"]
+    world.set_policy(policy)
+    metrics = world.evaluate(
+        dataset=dataset,
+        start_steps=eval_start_idx.tolist(),
+        goal_offset=int(cfg.rollout.goal_offset_steps),
+        eval_budget=int(cfg.rollout.eval_budget),
+        episodes_idx=eval_episodes.tolist(),
+        callables=OmegaConf.to_container(eval_cfg.eval.callables, resolve=True),
+        video=media_dir,
+    )
+
+    log = {
+        "test/rollout_epoch": int(epoch),
+        "test/video_dir": str(media_dir),
+    }
+    if isinstance(metrics, dict):
+        for key, value in metrics.items():
+            scalar = _as_scalar(value)
+            if scalar is not None:
+                log[_wandb_key("test", str(key))] = scalar
+
+    score_sequence = _find_score_sequence(metrics)
+    if score_sequence:
+        for idx, score in enumerate(score_sequence[: int(cfg.rollout.num_eval)]):
+            seed = int(cfg.rollout.test_start_seed) + idx
+            log[f"test/sim_max_reward_{seed}"] = float(score)
+        if "test/mean_score" not in log:
+            log["test/mean_score"] = float(np.mean(score_sequence))
+
+    video_exts = ("*.mp4", "*.gif", "*.webm")
+    videos = list(_iter_video_paths(metrics))
+    for pattern in video_exts:
+        videos.extend(str(path) for path in sorted(media_dir.rglob(pattern)))
+        videos.extend(str(path) for path in sorted(rollout_dir.rglob(pattern)))
+    videos = sorted(set(videos))[: int(cfg.rollout.num_vis)]
+    log["test/num_videos"] = len(videos)
+    for idx, video_path in enumerate(videos):
+        suffix = str(video_path).rsplit(".", 1)[-1].lower() if "." in str(video_path) else "mp4"
+        seed = int(cfg.rollout.test_start_seed) + idx
+        log[f"test/sim_video_{seed}"] = wandb.Video(str(video_path), fps=int(cfg.rollout.fps), format=suffix)
+    return log
 
 
 def run(cfg: DictConfig):
@@ -202,10 +421,21 @@ def run(cfg: DictConfig):
     best_val = float("inf")
     global_step = 0
     train_sampling_batch = None
-    for epoch in range(int(cfg.training.num_epochs)):
+    num_epochs = int(cfg.training.num_epochs)
+    for epoch in range(num_epochs):
         model.train()
         train_losses = []
-        iterator = tqdm(train_loader, desc=f"Training epoch {epoch}", leave=False, mininterval=float(cfg.training.tqdm_interval_sec)) if tqdm else train_loader
+        print(f"[train] epoch {epoch + 1}/{num_epochs} start")
+        iterator = (
+            tqdm(
+                train_loader,
+                desc=f"Training epoch {epoch + 1}/{num_epochs}",
+                leave=False,
+                mininterval=float(cfg.training.tqdm_interval_sec),
+            )
+            if tqdm
+            else train_loader
+        )
         optimizer.zero_grad(set_to_none=True)
         for batch_idx, batch in enumerate(iterator):
             batch = move_batch(batch, device)
@@ -249,9 +479,15 @@ def run(cfg: DictConfig):
                 ).squeeze(1)
                 pred_action = normalizer.unnormalize(sample)
                 record["train_action_mse_error"] = torch.nn.functional.mse_loss(pred_action, sample_batch["action"]).item()
+        if bool(cfg.rollout.enabled) and wandb_run is not None and epoch % int(cfg.training.rollout_every) == 0:
+            print(f"[rollout] epoch {epoch + 1}/{num_epochs} start")
+            rollout_log = _run_rollout(eval_model, scheduler, normalizer, metadata, cfg, output, device, epoch)
+            record.update(rollout_log)
+            print(f"[rollout] epoch {epoch + 1}/{num_epochs} done, videos={record.get('test/num_videos', 0)}")
         print(record)
+        json_record = {key: value for key, value in record.items() if not value.__class__.__module__.startswith("wandb")}
         with metrics_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(record) + "\n")
+            f.write(json.dumps(json_record) + "\n")
         if wandb_run is not None:
             wandb_run.log(record, step=global_step)
 

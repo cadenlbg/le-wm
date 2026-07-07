@@ -300,6 +300,10 @@ In WandB, watch:
 ```text
 train_loss
 val_loss
+train_action_mse_error
+test/mean_score or other test metrics
+test/sim_video_0
+test/sim_video_1
 lr
 epoch
 global_step
@@ -319,4 +323,56 @@ Warning signs:
 train_loss decreases but val_loss rises early -> overfitting or condition mismatch
 val_loss stays near 1.0 -> denoiser is not learning much
 eval improves with CEM but not rerank -> diffusion samples are useful but not precise enough
+```
+
+## 8. Train-Time Rollout Videos
+
+To mimic official Diffusion Policy's `test/sim_video_xxx` logging, enable rollout during training:
+
+```text
+rollout.enabled=True
+training.rollout_every=...
+```
+
+The trainer will run a small LE-WM world evaluation with the current EMA policy, save local videos under:
+
+```text
+<experiment>/rollouts/epoch_XXXX/
+```
+
+and upload them to WandB as:
+
+```text
+test/sim_video_0
+test/sim_video_1
+...
+```
+
+Video smoke command:
+
+```bash
+CUDA_VISIBLE_DEVICES=4 python -B -m latent_subgoal_act.lewm_diffusion_policy.train \
+  dataset=pusht_fixed_g25_k25_t25_ms_128k_train.pt \
+  output=lewm_dp_official_dims_video_smoke \
+  horizon=16 \
+  n_action_steps=8 \
+  history_size=2 \
+  policy.down_dims=[512,1024,2048] \
+  training.num_epochs=3 \
+  training.max_train_steps=20 \
+  training.max_val_steps=10 \
+  training.rollout_every=1 \
+  training.checkpoint_every=1 \
+  training.sample_every=1 \
+  dataloader.batch_size=16 \
+  val_dataloader.batch_size=16 \
+  logging.mode=online \
+  logging.project=lewm_diffusion_policy \
+  logging.name=lewm_dp_official_dims_video_smoke \
+  rollout.enabled=True \
+  rollout.num_eval=3 \
+  rollout.num_vis=3 \
+  rollout.sample_num_candidates=4 \
+  rollout.execution_horizon=8 \
+  device=cuda
 ```

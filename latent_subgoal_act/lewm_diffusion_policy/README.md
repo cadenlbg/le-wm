@@ -121,3 +121,42 @@ CUDA_VISIBLE_DEVICES=4 python -B -m latent_subgoal_act.lewm_diffusion_policy.eva
   output.filename=lewm_dp_diffusion_cem_n10.txt \
   device=cuda
 ```
+
+## Train-Time WandB Videos
+
+Enable rollout inside training to upload videos like official Diffusion Policy:
+
+```bash
+CUDA_VISIBLE_DEVICES=4 python -B -m latent_subgoal_act.lewm_diffusion_policy.train \
+  dataset=pusht_fixed_g25_k25_t25_ms_128k_train.pt \
+  output=lewm_dp_official_dims_video_smoke \
+  horizon=16 \
+  n_action_steps=8 \
+  history_size=2 \
+  policy.down_dims=[512,1024,2048] \
+  training.num_epochs=3 \
+  training.max_train_steps=20 \
+  training.max_val_steps=10 \
+  training.rollout_every=1 \
+  training.checkpoint_every=1 \
+  training.sample_every=1 \
+  dataloader.batch_size=16 \
+  val_dataloader.batch_size=16 \
+  logging.mode=online \
+  logging.project=lewm_diffusion_policy \
+  logging.name=lewm_dp_official_dims_video_smoke \
+  rollout.enabled=True \
+  rollout.num_eval=3 \
+  rollout.num_vis=3 \
+  rollout.sample_num_candidates=4 \
+  rollout.execution_horizon=8 \
+  device=cuda
+```
+
+WandB keys:
+
+```text
+test/sim_video_0
+test/sim_video_1
+test/sim_video_2
+```
