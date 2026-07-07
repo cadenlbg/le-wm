@@ -179,10 +179,8 @@ class LeWMDiffusionWorldPolicy(PixelEncoderMixin):
 
     def _fill_action_buffer(self, action_chunk: np.ndarray):
         horizon = min(self.execution_horizon, action_chunk.shape[1])
-        batched = action_chunk.shape[0] > 1
         for step in range(horizon):
-            action = action_chunk[:, step, :] if batched else action_chunk[0, step, :]
-            self._action_buffer.append(action)
+            self._action_buffer.append(action_chunk[:, step, :])
 
     def _inverse_dataset_scale(self, action):
         if self.action_mean is None or self.action_scale is None:
