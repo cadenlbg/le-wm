@@ -127,6 +127,8 @@ def build_default_cfg():
                 "sample_num_candidates": 8,
                 "test_start_seed": 100000,
                 "fps": 10,
+                "batch_video": False,
+                "single_env_video": True,
                 "cem_enabled": False,
                 "cem_diffusion_topk": 8,
                 "cem_num_iters": 3,
@@ -296,20 +298,21 @@ def _run_rollout(eval_model, scheduler, normalizer, metadata, cfg, output, devic
             "std_scale": float(cfg.rollout.cem_std_scale),
         }
     )
-    policy = LeWMDiffusionWorldPolicy(
-        lewm_encoder=lewm,
-        policy=eval_model,
-        scheduler=scheduler,
-        normalizer=normalizer,
-        transform=transform,
-        action_mean=metadata.get("action_mean"),
-        action_scale=metadata.get("action_scale"),
-        device=str(device),
-        execution_horizon=int(cfg.rollout.execution_horizon),
-        num_candidates=int(cfg.rollout.sample_num_candidates),
-        sample_seed=int(cfg.seed) + int(epoch),
-        cem_cfg=cem_cfg,
-    )
+    def make_policy(sample_seed):
+        return LeWMDiffusionWorldPolicy(
+            lewm_encoder=lewm,
+            policy=eval_model,
+            scheduler=scheduler,
+            normalizer=normalizer,
+            transform=transform,
+            action_mean=metadata.get("action_mean"),
+            action_scale=metadata.get("action_scale"),
+            device=str(device),
+            execution_horizon=int(cfg.rollout.execution_horizon),
+            num_candidates=int(cfg.rollout.sample_num_candidates),
+            sample_seed=sample_seed,
+            cem_cfg=cem_cfg,
+        )
 
     episode_len = get_episodes_length(dataset, ep_indices)
     max_start_idx = episode_len - int(cfg.rollout.goal_offset_steps) - 1
@@ -321,20 +324,30 @@ def _run_rollout(eval_model, scheduler, normalizer, metadata, cfg, output, devic
     random_episode_indices = np.sort(rng.choice(valid_indices, size=int(cfg.rollout.num_eval), replace=False))
     eval_episodes = dataset.get_row_data(random_episode_indices)[col_name]
     eval_start_idx = dataset.get_row_data(random_episode_indices)["step_idx"]
+    policy = make_policy(int(cfg.seed) + int(epoch))
     world.set_policy(policy)
-    metrics = world.evaluate(
-        dataset=dataset,
-        start_steps=eval_start_idx.tolist(),
-        goal_offset=int(cfg.rollout.goal_offset_steps),
-        eval_budget=int(cfg.rollout.eval_budget),
-        episodes_idx=eval_episodes.tolist(),
-        callables=OmegaConf.to_container(eval_cfg.eval.callables, resolve=True),
-        video=media_dir,
-    )
+    batch_video_dir = media_dir / "batch"
+    batch_video_arg = batch_video_dir if bool(cfg.rollout.batch_video) else None
+    if batch_video_arg is not None:
+        batch_video_arg.mkdir(parents=True, exist_ok=True)
+    eval_kwargs = {
+        "dataset": dataset,
+        "start_steps": eval_start_idx.tolist(),
+        "goal_offset": int(cfg.rollout.goal_offset_steps),
+        "eval_budget": int(cfg.rollout.eval_budget),
+        "episodes_idx": eval_episodes.tolist(),
+        "callables": OmegaConf.to_container(eval_cfg.eval.callables, resolve=True),
+    }
+    try:
+        metrics = world.evaluate(**eval_kwargs, video=batch_video_arg)
+    except TypeError:
+        batch_video_dir.mkdir(parents=True, exist_ok=True)
+        metrics = world.evaluate(**eval_kwargs, video=batch_video_dir)
 
     log = {
         "test/rollout_epoch": int(epoch),
         "test/video_dir": str(media_dir),
+        "test/video_mode": "single_env" if bool(cfg.rollout.single_env_video) else "batch",
     }
     if isinstance(metrics, dict):
         for key, value in metrics.items():
@@ -351,11 +364,42 @@ def _run_rollout(eval_model, scheduler, normalizer, metadata, cfg, output, devic
             log["test/mean_score"] = float(np.mean(score_sequence))
 
     video_exts = ("*.mp4", "*.gif", "*.webm")
-    videos = list(_iter_video_paths(metrics))
-    for pattern in video_exts:
-        videos.extend(str(path) for path in sorted(media_dir.rglob(pattern)))
-        videos.extend(str(path) for path in sorted(rollout_dir.rglob(pattern)))
-    videos = sorted(set(videos))[: int(cfg.rollout.num_vis)]
+    videos = []
+    if bool(cfg.rollout.single_env_video):
+        for idx in range(min(int(cfg.rollout.num_vis), len(eval_start_idx))):
+            seed = int(cfg.rollout.test_start_seed) + idx
+            single_dir = media_dir / f"sim_video_{seed}"
+            single_dir.mkdir(parents=True, exist_ok=True)
+            single_world = swm.World(
+                env_name=cfg.rollout.env_name,
+                num_envs=1,
+                max_episode_steps=2 * int(cfg.rollout.eval_budget),
+                image_shape=(224, 224),
+            )
+            single_policy = make_policy(int(cfg.seed) + int(epoch) + idx + 1)
+            single_world.set_policy(single_policy)
+            single_metrics = single_world.evaluate(
+                dataset=dataset,
+                start_steps=[int(eval_start_idx[idx])],
+                goal_offset=int(cfg.rollout.goal_offset_steps),
+                eval_budget=int(cfg.rollout.eval_budget),
+                episodes_idx=[int(eval_episodes[idx])],
+                callables=OmegaConf.to_container(eval_cfg.eval.callables, resolve=True),
+                video=single_dir,
+            )
+            single_scores = _find_score_sequence(single_metrics)
+            if single_scores:
+                log[f"test/sim_max_reward_{seed}"] = float(single_scores[0])
+            videos.extend(_iter_video_paths(single_metrics))
+            for pattern in video_exts:
+                videos.extend(str(path) for path in sorted(single_dir.rglob(pattern)))
+    else:
+        videos.extend(_iter_video_paths(metrics))
+        for pattern in video_exts:
+            videos.extend(str(path) for path in sorted(media_dir.rglob(pattern)))
+            videos.extend(str(path) for path in sorted(rollout_dir.rglob(pattern)))
+
+    videos = sorted(set(str(path) for path in videos))[: int(cfg.rollout.num_vis)]
     log["test/num_videos"] = len(videos)
     for idx, video_path in enumerate(videos):
         suffix = str(video_path).rsplit(".", 1)[-1].lower() if "." in str(video_path) else "mp4"
