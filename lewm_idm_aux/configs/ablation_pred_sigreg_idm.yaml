@@ -1,0 +1,16 @@
+defaults:
+  - lewm_idm_aux
+  - _self_
+
+output_model_name: lewm_pred_sigreg_idm
+
+loss:
+  sigreg:
+    weight: 0.09
+    kwargs:
+      knots: 17
+      num_proj: 1024
+  idm:
+    enabled: true
+    weight: 0.1
+

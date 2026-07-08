@@ -1,0 +1,1349 @@
+
+
+===== PAGE 1 =====
+Hierarchical Planning with Latent World Models
+Wancong Zhang1,2,∗,Basile Terver 1,Artem Zholus 1,3,Soham Chitnis 2,Harsh Sutaria 2,Mido Assran 1,
+Randall Balestriero1,4,Amir Bar 1,Adrien Bardes 1,Yann LeCun 2,†,Nicolas Ballas 1,†
+1FAIR at Meta,2New York University,3Mila - Québec AI Institute,4Brown University
+∗Work done at Meta,†Joint last author
+World models are a promising path to zero-shot embodied control through planning. However,
+existing world model planners struggle on long-horizon, multi-stage tasks: prediction errors compound
+and naive search is exponential in the planning horizon. Hierarchy mitigates both by decomposing
+tasks into shorter, tractable subproblems; yet prior hierarchical approaches either amortize control
+into task-specific policies (hierarchical RL) or assume low-dimensional states and known dynamics
+(classical hierarchical MPC). We present Hierarchical Planning with Latent World Models (HWM),
+an architecture and planning paradigm for hierarchical model predictive control (MPC) directly on
+visual world models trained solely via next-latent prediction. HWM learns world models at multiple
+temporal scales within a shared latent space, so predictions from the long-horizon model serve as
+subgoals for the short-horizon model via latent matching—without task-specific rewards, skill learning,
+or hierarchical policies. To keep long-horizon search tractable, HWM learns an action encoder that
+compresses primitive action chunks into latent macro-actions. On real-world Franka manipulation,
+HWM solves pick-&-place from a single goal image at 70% success vs. 0% for single-level planning.
+Across simulated push manipulation and maze navigation, HWM consistently improves performance
+on long-horizon tasks while requiring up to3×less planning compute.
+Date:2026-06-18
+Correspondence:Wancong Zhang atwz1232@nyu.edu
+Code:https://github.com/kevinghst/HWM_PLDM
+Website:https://kevinghst.github.io/HWM/
+1 Introduction
+Planning with learned world models has emerged as a powerful paradigm for embodied decision making: by
+simulating the consequences of candidate actions, an agent can reason about long-term outcomes without
+acting in the environment [47, 10, 17]. Recent advances in latent-space modeling and self-supervised learning
+have made it possible to train such models directly from large collections of unlabeled, task-agnostic offline
+trajectories, enabling zero-shot planning from high-dimensional observations such as pixels [1, 46, 6, 62, 13].
+Yet single-level (flat) planning with these models fails in two distinct regimes. On non-greedy tasks like
+pick-and-place — where the optimal trajectory must temporarily move away from the goal — the goal-matching
+cost the planner minimizes is non-monotone along that trajectory, trapping local optimizers in greedy shortcuts
+even at modest horizons; empirically, even simple real-world pick-and-place is out of reach for state-of-the-art
+world-model planners such as VJEPA2-AC [1] (table 1). On long-horizon tasks, prediction errors compound
+over autoregressive rollouts [50, 27] and the action search space grows exponentially with horizon [25].
+Introducing temporal hierarchy into decision-making — reasoning coarsely over long horizons while retaining
+fine-grained control at short horizons — has long been studied as a way to mitigate both effects, but existing
+approaches do not transfer cleanly to zero-shot planning on visual world models. Hierarchical reinforcement
+learning based on options, skills, or hierarchical policies [49, 3, 19, 39] requires task-specific rewards or task
+distributions, and even modern goal-conditioned and zero-shot RL methods [39, 41] generalize poorly beyond
+training [46]. Hierarchical world models have been explored in the RL setting [15, 44, 21], but remain coupled
+to policy learning over a specific task distribution. Hierarchical MPC in optimal control [12, 33, 29] is
+task-agnostic but has been confined to low-dimensional states, hand-engineered features, or known dynamics.
+It remains unclear how to realize hierarchical zero-shot planning directly on visual world models.
+1
+arXiv:2604.03208v2  [cs.LG]  16 Jun 2026
+
+===== PAGE 2 =====
+High LevelWM
+Low LevelWM
+generatesubgoal
+Goal Obs
+Subgoal
+High Level Plan to Goal
+Low Level Plan to Subgoal
+Current Obs
+actions
+Drawer Pick-&-Place Push-T Diverse Maze
+0
+20
+40
+60
+80
+100Success Rate (%)
+VJEPA2-AC DINO-WM PLDM
++40% +70%
++44%
++39%Flat WM HWM (ours)
+0.0 0.5 1.0
+Plan Time (norm.)
+0
+50
+100Success Rate (%)
+Maze
+Push T
+Franka
+Flat WM HWM (ours)
+Figure 1 Top: Hierarchical planning in latent space.A high-level planner optimizes macro-actions using a long-horizon
+world model to reach the goal; the first predicted latent state from the high-level rollout serves as the subgoal for a
+low-level planner, which optimizes primitive actions with a short-horizon world model. Both levels replan as new
+observations arrive, in a closed-loop MPC fashion. Solid borders denote ground-truth observations; others are decoder
+reconstructions shown for interpretability only.Bottom Left:HWM improves long-horizon planning on 3 latent world
+model architectures across 4 task suites.Bottom Right:Success rate versus normalized planning time. Hierarchical
+planning matches or exceeds performance with≈3×lower planning time under a fixed planning budget.
+We proposeHierarchical Planning with Latent World Models(HWM), a framework for zero-shot hierarchical
+MPC over learned latent world models (Table 7 contrasts HWM with prior hierarchical model-based methods).
+HWM trains world models at multiple temporal resolutions within a shared latent space, supervised solely
+by next-latent prediction, and couples them at planning time: predictions from the coarser model serve as
+subgoals that the finer-scale MPC matches in latent space; no hierarchical policy, skill, or goal-conditioned
+controller is needed. To support efficient long-horizon planning, we further introduce a learned action encoder
+that compresses sequences of primitive actions between waypoint states into latent macro-actions, reducing
+the dimensionality of the coarser-scale search. To our knowledge, HWM is the first world-model planner
+to demonstrate zero-shot, non-greedy real-robot manipulation from pixels with a single goal image, solving
+Franka pick-&-place at 70% success while single-level VJEPA2-AC planner [1] achieves 0%.
+We summarize our contributions as follows:
+• We introduce HWM, a hierarchical MPC formulation that couples learned world models at different
+temporalscalesviaasharedlatentspace, enablingdirectsubgoaltransferacrosslevelswithouthierarchical
+policies, skill learning, or task-specific rewards.
+• We show that HWM unlocks a new capability for zero-shot world-model planning: solving non-greedy
+real-robot tasks from visual inputs, where success requires temporarily moving away from the goal.
+2
+
+===== PAGE 3 =====
+z1
+E
+s1
+F(2)
+lt1
+ˆzt2 F(2)
+lt2
+F(2)
+ltH−1
+ˆzH
+· · · · ·
+F(1)
+a1
+F(1)
+ah
+ˆzh
+. . .
+zgoal
+E
+sgoal
+Llow Lhigh
+High-Level Planning
+to Goal
+arg min{l}Lhigh
+Low-Level Planning
+to1 st Subgoal
+arg min{a}Llow
+Model key
+F(1) Low-level world modelF(2) High-level world model
+Figure 2 Hierarchical planning in latent space.A high-level planner optimizes macro-actions using a long-horizon latent
+world model to reach the final goal embedding. The resulting first predicted latent state serves as a subgoal for low-level
+planning, where a short-horizon world model optimizes primitive actions to reach this subgoal.
+HWM achieves 70% success on Franka pick-&-place from a single goal image, compared to 0% for
+VJEPA2-AC [1], and compares favorably to several zero-shot VLA baselines under the evaluated setup.
+• We demonstrate consistent gains across three latent world-model backbones — VJEPA2-AC (manipula-
+tion), DINO-WM (push manipulation), and PLDM (maze navigation) — and show that hierarchical
+planning improves both performance (up to+44%and+39%absolute) and efficiency (up to a3 ×
+reduction in planning compute) on long-horizon tasks.
+2 Hierarchical Planning with Latent World Models
+Problem Setting.We consider goal-conditioned control in an MDPM = (S,A, µ, p )with access to an offline
+dataset D of state-action trajectories τ = ( s1, a1, s2, . . . , aT−1 , sT ). At test time, the agent receives an
+observation st and a goal observationsg, both raw pixels, and must reach the goal via model predictive
+control. Given a learned world model and a planning horizonh, MPC optimizes a candidate action sequence
+at:t+h−1 under a goal-reaching objective, executes the firstk≤h actions, observes the new state, and replans.
+Planning with Latent World Models.A latent world model consists of an encoderE mapping observations to
+latent states zt = E(st)and a predictor F forecasting future latents under candidate actions. In latent-space
+MPC, the planner encodes the current and goal observations asz1 = E(s1)and zg = E(sg), then optimizes
+primitive actionsa∗
+1:h = arg minˆa1:h ∥F (ˆa1:h; z1) −z g∥1, whereF (ˆa1:h; z1)is the final latent after autoregressive
+rollout. This policy-free formulation enables zero-shot goal-conditioned control, but such single-level planning
+suffers from the two failure modes identified in section 1 — cost-surface non-monotonicity on non-greedy
+tasks, and compounding errors and exponential action search on long-horizon tasks. We address both by
+planning hierarchically over latent world models at multiple timescales: section 2.1 describes the hierarchical
+planning procedure, and section 2.2 describes how to train the multi-timescale latent world models it requires.
+2.1 Top-Down Hierarchical Planning
+We adopt atop-downhierarchical planning strategy operating entirely in this latent space (Fig. 2). A
+high-level planner optimizes abstract macro-actions toward the goal using a long-horizon world model, and
+the resulting latent predictions serve as subgoals for a low-level planner optimizing over primitive actions, in a
+receding-horizon manner. We assume access to two latent world models at different temporal resolutions: a
+low-level model F (1)(zt+1 |z t, at)conditioned on primitive actions, and a high-level modelF (2)(zt+h |z t, lt)
+conditioned on latent macro-actionslt.
+The macro-actionslt are produced by a learned action encoder that summarizes temporally extended sequences
+3
+
+===== PAGE 4 =====
+of low-level actions. We do not assume a fixed high-level horizonh, allowing each high-level transition to
+correspond to a variable-length segment of low-level execution. Learned macro-actions outperform both
+concatenated primitive actions and hand-crafted summaries such as net end-effector displacement (section 4.3).
+High-Level Planning.Given an initial observation s1 and a goal observationsg, we encode them into latent
+space as z1 = E(s1)and zg = E(sg). At the high level, we plan over a sequence ofH macro-actions ˆl1:H by
+minimizing a goal-conditioned energy function in latent space:
+E2(ˆl1:H ;z 1, zg)≜
+zg −F (2)(ˆl1:H ;z 1)
+
+1
+Here, F (2)(ˆl1:H ; z1)denotes the final latent state obtained by autoregressively unrolling the world model
+F (2) starting from z1 with macro-actions ˆl1:H. The optimal macro-action sequence is given by: l∗
+1:H =
+arg minˆl1:H
+E2(ˆl1:H ;z 1, zg).
+Unrolling the optimized latent plan yields a sequence of intermediate latent subgoals at the high-level temporal
+resolution:˜zi ≜F (2)(l∗
+1:i;z 1), i= 1, . . . , H.
+Low-Level Planning.At execution time, the agent plans primitive actions to reach the first latent subgoal˜z1.
+Starting from the current latent statez1, we define a low-level energy function over a horizon ofhsteps:
+E1(ˆa1:h;z 1,˜z1)≜
+˜z1 −F (1)(ˆa1:h;z 1)
+
+1
+The optimal low-level action sequence is obtained viaa∗
+1:h = arg minˆa1:h E1(ˆa1:h; z1,˜z1), which is fed into the
+controller. The agent re-plans everykinteractions using the hierarchical planner.
+2.2 Hierarchical World Model Architecture
+zt1 lt1 zt2 lt2 zt3
+F (2)
+ϕ : High Level World Model (long horizon)
+ˆzt2 ˆzt3
+Action Encoder Action Encoder
+at1 · · · at2−1 at2 · · · at3−1
+Figure 3The high-level world model captures long-
+horizon dynamics using macro-actions encoded from
+chunks of low-level actions. It is causal and trained
+with a latent prediction loss.
+Enabling the hierarchical MPC described in section 2.1
+requires two world models operating at different time
+scales in a shared latent space. The low-level model
+F (1)
+θ predicts zt+1 = f (zt, at)and is a standard latent
+world model trained with next-latent prediction (ap-
+pendix A.1). The high-level modelF (2)
+ϕ predicts dynam-
+ics across temporally extended segments; to do this, we
+introduce a learned action encoderAψ that summarizes
+primitive action chunks into compactmacro-actions, and
+let F (2)
+ϕ operate over these. This allowsF (2)
+ϕ to overcome
+two limitations of single-level planning. First, fewer au-
+toregressive rollout steps are needed to reach a given
+goal horizon, reducing compounding error. Second, com-
+pressing primitive action chunks into a lower-dimensional
+latent space shrinks the high-level MPC search space,
+making long-horizon optimization more tractable.
+Given a trajectoryτ = (s1, a1, . . . , sT ), we sampleN waypoint indices1 = t1 < . . . < t N, encode waypoints as
+ztk = E(stk )and action chunks as ltk = Aψ(atk:tk+1 ), and feed the interleaved sequence(ltk , ztk )k∈[N] to F (2)
+ϕ
+to predict the next waypoint latentsˆztk+1 := F (2)
+ϕ ((lti , zti )i≤k). We supervise with the teacher-forcingℓ1 loss
+Ltf (ϕ, ψ) := 1
+N
+PN
+k=1 ∥ˆztk+1 −z tk+1 ∥1. Having both models trained enables hierarchical MPC (section 2.1).
+3 Empirical Evaluation of Hierarchical Planning Across World Models
+We evaluate HWM on three latent world-model architectures — VJEPA2-AC [1], DINO-WM [62], and
+PLDM [46] — under harder versions of their original settings: real-world Franka manipulation without
+explicit subgoals (VJEPA2-AC), Push-T extended from 25 to 75 timesteps (DINO-WM), and PointMaze with
+train–test layout mismatch and larger maps (PLDM). We summarize our findings as follows:
+4
+
+===== PAGE 5 =====
+Subgoal Goalt=0 t=2 t=4 t=6 t=8 t=10
+Subgoal 1 Subgoal 2 Goalt=0 t=3 t=6 t=9 t=12 t=15 t=18 t=21 t=24
+Figure 4 Top:Executions on pick-&-place and drawer manipulation with dual-gripper Franka.Bottom:Executions on
+Push-T. Dotted red columns indicate subgoals inferred by the high-level planner and decoded for visualization. See
+appendix H for additional Franka executions.
+1. Zero-shot non-greedy control:Pick-&-place success improves from 0% to 70% on Franka with VJEPA2-AC.
+2.Long-horizon reasoning:Push-T success increases from 17% to 61% with DINO-WM.
+3.OOD generalization:HWM improves PLDM performance on navigation in larger, unseen mazes.
+4. Compute efficiency:Comparable or better planning performance than single-level planners with3× less
+compute.
+3.1 Franka Arm with Robotiq Gripper
+We evaluate HWM on real-world multi-stage Franka manipulation: pick-&-place and drawer opening/closing.
+These tasks require non-greedy behavior, where success depends on intermediate motions that temporarily
+increase distance to the goal.
+Platform and Task.We follow the VJEPA2-AC deployment setup and evaluate on real-world pick-&-place
+and drawer manipulation using a 7-DoF Franka Emika Panda arm with a two-finger gripper. Pick-&-place
+includes 10 start–goal pairs across two objects (cup and box); drawer manipulation covers 7 opening and
+closing tasks (appendix F). We run N=5 independent trials per configuration, yielding 50 total trials per
+object and 35 for drawer; per-configuration outcomes are highly consistent.
+Baselines. V JEPA2-AC[1] is a single-level, world-model-based planner. Because we use the same architecture
+and training data for our low-level world model, this comparison isolates the effect of hierarchical planning.
+We additionally evaluate three vision–language-action models (VLA) baselinesOcto,π0-FAST-DROID, and
+π0.5-DROID (see appendix J.1 for details).
+Data.World models are trained on approximately 130 hours of unlabeled real-robot manipulation data from
+DROID [28] and RoboSet [31]. Observations include RGB images and end-effector proprioception; actions
+correspond to end-effector delta poses (see appendix A.2 for details).
+Hierarchical Planning Setup.The agent receives current and goal observations, each specified by RGB images
+and end-effector poses, and outputs end-effector delta poses mapped to joint displacements via inverse
+kinematics. The high-level planner optimizes 4-D macro-actions (we ablate this choice in section 4.4), while
+the low-level planner optimizes primitive actions; both use CEM and replan every step. Full hyperparameters
+5
+
+===== PAGE 6 =====
+are in appendix B.
+World Model Architectures.We follow the VJEPA2-AC training recipe for the low-level world model (see
+appendix A.2). To train the high-level world model, we useN = 3waypoint states sampled from trajectory
+segments spanning up to4seconds, with the middle waypoint chosen uniformly at random. Macro-actions are
+encoded from the intervening low-level actions using a transformer-based action encoder, with the CLS token
+projected to the macro-action space. For visualization, we decode latent representations into RGB images
+using a ViT decoder; these reconstructions are used solely for qualitative analysis and are not involved in
+planning or training (details in appendix E).
+Method P&P Cup P&P Box Drawer
+Octo 0% 0% 43%
+π0-FAST-DROID 52% 18% –
+π0.5-DROID 68% 36% –
+VJEPA2-AC 0% 0% 30%
+VJEPA2-AC
+(hierarchy)70% 60% 70%
+Table 1 Zero-shot robotic manipulation with Franka, eval-
+uated end-to-end from a single goal image. Each
+rate is computed overN = 5trials per (start, goal)
+configuration; per-configuration breakdowns and 95%
+Clopper–Pearson confidence intervals are reported
+in Table 17. The flat VJEPA2-AC planner fails on
+non-greedy tasks (pick-&-place, multi-stage drawer);
+HWM solves them without manual decomposition.
+Main Results.We report the findings in table 1. Prior
+work with VJEPA2-AC [1] has shown strong zero-shot
+generalization to novel environments for simple, greedy
+tasks such as grasping or reaching. Consistent with this,
+the single-level planner succeeds on 2/7 drawer tasks
+admitting linear push/pull motions, but fails entirely on
+pick-&-placeandonnon-greedydrawervariantsrequiring
+multi-stage motion. We verify in section 4.1 that the
+samesingle-levelplannersolvesthesetaskswhensupplied
+with manual intermediate subgoals, isolating the failure
+to the planner rather than the underlying world model.
+In contrast, hierarchical planning solves both pick-&-
+place and drawer tasks end-to-end from a single goal
+image. It generalizes zero-shot to novel environments
+and objects, achieving 70% success on pick-&-place cup
+and 60% on box, and solves non-greedy drawer tasks
+requiring multi-stage motion (e.g., moving down before
+translating laterally). Example executions are in Fig. 4
+and appendix H. HWM failures arise mainly from perceptual imprecision (e.g., depth errors) or near-miss
+executions, suggesting that coarse high-level subgoals can lose details needed for precise low-level guidance.
+We also compare against vision–language–action (VLA) baselines, noting that the comparison spans different
+goal-specification interfaces: HWM and Octo use a single goalimage, while theπ-models uselanguagegoals
+(appendix J.1). HWM is competitive with these baselines despite significantly less training data (∼ 77×), and
+far exceeds Octo under identical image-goal supervision.
+Takeaway:HWM enables zero-shot, non-greedy manipulation on a real robot from a single goal image,
+where single-level world-model planners fail.
+3.2 Push-T
+We instantiate HWM on top of DINO-WM [62] and evaluate it on goal-conditioned Push-T, where an agent
+must push a T-shaped object to a goal configuration sampled from a validation trajectory. To stress-test
+long-horizon planning, we evaluate start–goal pairs up tod = 75timesteps apart, versus d = 25evaluated in
+DINO-WM. Models are trained from the dataset released with DINO-WM.
+Baselines.We compare against (i) DINO-WM [62], the single-level planning baseline; (ii) HIQL [39], a
+state-of-the-arthierarchicalgoal-conditioned RL method; (iii) GCIQL [ 30] and HILP [41] as additional
+goal-conditioned and zero-shot RL baselines (appendix J.2).
+Hierarchical Planning Setup.Hierarchical planning is performed using CEM at two temporal scales, with a high-
+level planner optimizing macro-actions and a low-level planner refining primitive actions in a receding-horizon
+manner. Full CEM hyperparameters are provided in appendix B.
+World Model Architectures.The low-level planner uses DINO-WM with a frozen DINOv2 encoder and a
+25M-parameter causal ViT world model over short action–latent contexts [62]. The high-level model operates
+in the same latent space over randomly sampled waypoint sequences: it scales the ViT world model to 75M
+6
+
+===== PAGE 7 =====
+40 80 120 160 200 240 280 320
+Mean Time per Plan (ms)
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+Success Rate
+DINO-WM
+DINO-WM (hierarchy)
+60 120 180 240 300 360 420 480 540 600
+Mean Time per Plan (ms)
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+Success Rate
+PLDM
+PLDM (hierarchy)
+Figure 5 Success rate vs. test-time compute.We vary the planning budget by sweeping CEM/MPPI samples and
+iterations (see appendix C). Hierarchical planning achieves higher success while using up to3× less test-time compute
+than single-level planners.Left:Push-T success rate vs. planning time (d = 50).Right:Diverse maze success rate vs.
+planning time (D∈[9,12]).
+parameters and uses a transformer-based action encoder to compress primitive action chunks into latent
+macro-actions of dimension 4. Architecture and training details are provided in appendix A.3.
+Methodd= 25d= 50d= 75
+GCIQL40% 25% 7.5%
+HIQL55% 30% 20%
+HILP25% 13% 0%
+DINO-WM84% 55% 17%
+DINO-WM (hier.)89% 78% 61%
+Table 2 Push-T Performance Across Task Horizons. In
+each trial, a random start–goal paird steps apart
+is sampled from a validation trajectory.
+Main Results.As shown in table 2, hierarchical planning con-
+sistently outperforms DINO-WM as task difficulty increases.
+While the single-level planner’s success rate drops sharply as
+the task horizon grows, the hierarchical planner remains sub-
+stantially more robust at longer horizons. The performance
+gap is not explained by parameter count: capacity-matched
+single-level planners do not match HWM and sometimes
+degrade with increased capacity (appendix D.2). Hierar-
+chical planning also exhibits a more favorable compute–
+performance trade-off, capable of achieving higher success
+rates while requiring3 × less compute per planning step
+compared to the single-level planner (Fig. 5). These re-
+sults highlight the advantage of planning over temporally
+abstract macro-actions, which reduces optimization complexity while preserving effective long-horizon control.
+Moreover, the performance of policy baselines (GCIQL, HIQL, HILP) drops sharply at longer horizons,
+suggesting limited robustness to long-horizon generalization without explicit planning. See Fig. 4 for examples
+of executions and subgoals.
+Takeaway: HWM improves long-horizon control while reducing inference-time compute.
+3.3 Diverse Maze
+We instantiate HWM on top of PLDM [46] and evaluate it on Diverse Maze navigation, focusing on zero-shot
+generalization to larger, unseen layouts that require long-horizon planning.
+Platform and Task.We build on the MuJoCo PointMaze environment [53], using top-down RGB renderings as
+input. Maze layouts are randomly generated on a10× 10grid with connected free space; models are trained
+on 25 layouts and evaluated on 20 held-out layouts. Start and goal locations are sampled uniformly with
+grid-distance separation H, defining easy (D∈ [5, 8]), medium (D∈ [9, 12]), and hard (D∈ [13, 16]) regimes.
+Dataset and training details are provided in appendix A.4.
+Planning and Baselines.Hierarchical planning uses MPPI at two temporal scales (details in appendix A.4). We
+compare against the single-level PLDM planner, goal-conditioned RL baselines GCIQL and HIQL [39], and
+the zero-shot RL method HILP [41].
+7
+
+===== PAGE 8 =====
+World Model Architectures.The low-level planner follows PLDM [46], jointly learning a lightweight convolutional
+encoder and convolutional predictor from visual offline trajectories over 15-step action–latent rollouts, with
+VICReg regularization to prevent collapse. The high-level model reuses the frozen low-level encoder, predicts
+waypoint latents at a coarser temporal stride of 10 with a higher-capacity convolutional predictor, and
+conditions on 8-dimensional macro-actions produced from primitive action chunks. Architecture and training
+details are provided in appendix A.4.
+MethodD∈[5,8]D∈[9,12]D∈[13,16]
+GCIQL 85% 40% 33%
+HIQL 88% 73% 48%
+HILP 48% 20% 10%
+PLDM 100%84% 44%
+PLDM (hier.)100% 95% 83%
+Table 3 Diverse Maze Across Task Horizons. Agents are
+evaluated zero-shot on navigation tasks in held-out
+test maps. Start and goal positions are randomly
+sampled such that their shortest-path distance isD.
+Main Results.As shown in table 3, the performance gap
+between HWM and PLDM widens as the task horizon
+increases. On the hardest setting, hierarchy nearly dou-
+bles the success rate from44%to83%, suggesting that
+coarse subgoal planning is most beneficial for long-horizon
+navigation. Even in settings where the single-level plan-
+ner performs reasonably well, it requires substantially
+higher test-time compute to match HWM performance
+(Fig. 5). In contrast, HWM achieves higher success with
+4× less compute. With or without hierarchy, both PLDM
+variants outperform goal-conditioned and zero-shot RL
+policy baselines when generalizing to out-of-distribution
+maze layouts, highlighting the robustness of model-based
+planning to distribution shift in environment geometry. See Fig. 10 for visualizations of high-level plans.
+Takeaway: HWM consistently improves zero-shot planning across diverse latent world models.
+4 Analysis of Hierarchical Planning
+4.1 Manual Subgoals: Isolating Planning from Representation
+Method
+P&P
+(Manual Subgoals)
+P&P
+(End-to-End)
+Cup Box Cup Box
+VJEPA2-AC 80% 80% 0% 0%
+VJEPA2-AC (hierarchy) 80% 80%70% 60%
+Table 4 Full Franka results, including the manual-subgoal control.When pick-&-place is manually decomposed into
+grasp-then-place subtasks via intermediate subgoal images, the flat VJEPA2-AC planner reaches 80%/80%; without
+this supervision, the flat planner fails completely. HWM recovers 70%/60% of this performance automatically from a
+single goal image, without manual decomposition.
+The single-level VJEPA2-AC planner fails entirely on end-to-end pick-&-place (Table 1), but this aggregate
+failure conflates two possible causes: the VJEPA2-AC world model may lack the representational fidelity
+needed for manipulation tasks, or single-level MPC may be unable to escape the greedy-shortcut traps
+that non-monotone goal-matching induces (Section 1). This section disentangles the two by supplying the
+single-level planner with manually-defined intermediate subgoals.
+Setup.For each of the 10 pick-&-place evaluation episodes per object, we manually annotate a single
+intermediate subgoal image corresponding to the grasp point. The single-level VJEPA2-AC planner is run
+in two sequential phases: first reaching the subgoal by grasping the object, then reaching the final goal by
+moving the object to the goal location.
+Results.Table 4 reports the Franka results for the manual-subgoal setup. With manual subgoals, the
+single-level VJEPA2-AC planner reaches 80%/80% on pick-&-place cup/box, far above its 0%/0% without
+subgoals. The VJEPA2-AC world model is therefore competent on these tasks given the right intermediate
+8
+
+===== PAGE 9 =====
+targets; the failure of single-level planning is hierarchical in nature, not representational. HWM recovers most
+of this oracle performance automatically (70%/60% from a single goal image), confirming that its contribution
+is to produce reachable subgoals without manual annotation.
+4.2 Do High-Level World Models Improve Long Horizon Prediction?
+0.75 1.00 1.50 1.75 2.00
+Prediction Horizon (seconds)
+0.350
+0.355
+0.360
+0.365
+0.370
+0.375
+0.380
+0.385
+Prediction L1
+Low Level Predictor
+High Level Predictor
+Figure 6 Prediction error ( L1) as a function of prediction
+horizon.For short horizons (≤ 1s), the low-level world
+model is more accurate. For longer horizons (≥ 1.5s),
+a single-step prediction from the high-level world model
+outperforms autoregressive rollouts of the low-level model,
+reflecting reduced error accumulation.
+A key challenge in long-horizon planning with learned
+world models is error accumulation during autore-
+gressive rollouts, where small one-step errors com-
+pound over time. We hypothesize that models trained
+at longer temporal scales yield more accurate long-
+horizon predictions by reducing the number of au-
+toregressive steps required. To test this, we condition
+both low-level and high-level world models—trained
+on the DROID dataset—on held-out initial observa-
+tions and predict future states up to 2 seconds ahead,
+measuring ℓ1 error to the ground-truth future latent
+state. Predicting 2 seconds ahead requires up to 16
+autoregressive steps for the low-level model, whereas
+the high-level model produces a single-step predic-
+tion. As shown in Fig. 6, the low-level model is more
+accurate for short horizons (≤ 1s), while the high-
+level model achieves lower error for longer horizons
+(≥ 1.5s), supporting a hierarchical strategy in which
+high-level planning provides long-term guidance and
+low-level planning handles short-term precision.
+4.3 Learning Latent Macro-Actions vs. Handcrafted or Direct Representations
+A key question is how to parameterize macro-actions in the hierarchical world model. We compare learned
+latent macro-actions—obtained by encoding sequences of low-level actions—against simpler alternatives:
+concatenating primitive actions, and hand-crafted summaries such as net end-effector displacement (delta
+pose) in robotic settings. Learned macro-actions consistently outperform both.
+Compared to concatenating primitive actions, macro-actions achieve substantially higher planning performance
+(table 5) by compressing action sequences into a lower-dimensional space, reducing the high-level planning
+search complexity. For the Franka experiments, we instantiate the handcrafted high-level action baseline as
+the net end-effector displacement between the start and end of each low-level action chunk. As shown in
+table 6, models trained with this delta-pose representation produce plans that align worse with expert actions
+than those trained with learned macro-actions. This gap suggests that simple displacement summaries can
+discard important temporal structure: in particular, they can collapse extended, non-greedy trajectories into
+a single endpoint displacement.
+High Level ActionD∈[9,12]D∈[13,16]
+Concat Primitive Actions 52 37
+Macro-Action95 83
+Table 5Effect of macro-action parameterization on plan-
+ning success rate (%) in Diverse Maze. Concatenating
+primitive actions yields substantially lower success than
+learned macro-actions.
+High Level Action Cos↑ℓ 1 ↓
+Delta Pose0.80±0.02 0.088±0.005
+Macro-Action0.88±0.03 0.080±0.002
+Table 6Action alignment to expert trajectories on Franka
+for high-level world models using delta-pose vs. learned
+macro-actions (mean ± SE). We report cosine similarity
+(↑) andℓ 1 (↓) between inferred and expert behavior.
+Overall, learned macro-actions provide a more effective and general representation for high-level planning,
+capturing the structure of action sequences relevant for long-horizon prediction.
+9
+
+===== PAGE 10 =====
+4.4 Emergence of semantic subgoals
+3 4 6 8 12 16
+Latent Action Dim
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+High Lvl Plan Success Rate
+High Lvl Plan Success Rate
+Action Cosine Sim
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Action Cosine Sim
+Figure 7 Effect of macro-action dimension on hierarchical planning. Left:Performance as a function of macro-action
+dimension d. When the latent space has very low capacity, the high-level planner fails to produce valid plans. Asd
+increases, success improves; however, beyond a moderate dimensionality, proposed subgoals become harder for the
+low-level planner to execute, as indicated by a drop in the cosine similarity between the inferred primitive actions from
+the hierarchical planner and expert behavior.Right:Qualitative rollouts illustrating this trade-off. Moderate latent
+dimensionality biases the planner toward reachable, greedy subgoals, yielding the best overall performance.
+We study how the macro-action dimensionality affects the two components required for successful hierarchical
+planning: whether the high-level model produces a valid plan to the final goal, and whether the first predicted
+subgoal is reachable by the low-level planner.
+We evaluate these categories in two steps. First, we assess high-level plan validity qualitatively from decoded
+rollouts: a plan is considered valid if the decoded final high-level prediction realizes the desired goal. Second,
+among valid plans, we test whether the first high-level subgoal is reachable by the low-level planner by
+comparing the primitive actions inferred by the hierarchical planner with expert actions. In pick-&-place,
+reachability has a simple interpretation: a reachable subgoal should induce the same greedy behavior as the
+expert, namely moving toward and grasping the object before transporting it. By contrast, an unreachable or
+non-greedy subgoal induces incorrect low-level actions, such as moving directly toward the target location
+without first picking up the object. Low similarity to the expert action therefore indicates that the high-level
+plan may look valid globally, but proposes a subgoal that the low-level planner cannot reliably execute.
+As shown in Fig. 7, when the macro-action space has sufficient capacity (≥ 4dimensions), the high-level
+planner typically produces valid plans. However, these subgoals are not always reachable by the low-level
+planner, as they may require non-greedy action sequences. Restricting the macro-action dimensionality biases
+the planner toward proposing subgoals that are achievable with greedy behavior. This suggests an optimal
+regime in which the latent space is expressive enough to encode useful trajectories, but not so expressive
+that it enables subgoals requiring complex non-greedy execution. Empirically, a macro-action dimension of 4
+strikes this balance for the Franka tasks.
+Notably, reconstruction fidelity from latent predictions is not tightly correlated with hierarchical planning
+success. Lower-dimensional macro-actions yield noisier predictions, reflected in higherℓ1 error and blurrier
+reconstructions (Fig. 7), as expected under stronger compression. Nevertheless, these predictions often preserve
+coarse semantic structure, such as contact events or motion direction, which is sufficient for hierarchical
+planning despite reduced visual precision.
+5 Related Works
+World Models and Planning.Learning predictive models of environment dynamics is a core idea in model-
+based reinforcement learning [47], with early work focusing on state-space dynamics for planning and policy
+10
+
+===== PAGE 11 =====
+optimization [10, 48]. More recent approaches learn dynamics from high-dimensional observations, either
+directly in pixel space or in a learned latent space [11, 17, 18, 45, 20, 55, 37, 61, 4], enabling efficient learning
+and planning from pixels in both simulation and real-world robotics.
+Recent work further demonstrates that task-agnostic generative world models trained on large-scale, real-world
+video can produce realistic and diverse simulations of physical environments [22, 57, 8, 5], highlighting the
+potential of scaling predictive modeling beyond task-specific datasets. Closely related to our setting, a line of
+work on latent world models shows that models trained on reward-free offline data via next-latent prediction
+can generalize zero-shot to downstream control tasks. These approaches leverage the learned dynamics to
+simulate action outcomes and select actions through cost-based optimization, without requiring task-specific
+policy training [1, 46, 52, 62, 13, 35]. A contemporary line of work instead couples video generation with
+action prediction in a single model — sometimes called World Action Models — leveraging pretrained video
+diffusion backbones to inherit visuomotor priors [23, 34, 32, 58]; these methods learn an explicit policy, whereas
+latent world model planners like HWM learn only dynamics and perform zero-shot MPC at inference.
+Limitations of Long Horizon Planning.Learned world models remain brittle when used for long-horizon planning
+due to compounding prediction errors [50, 27]. Moreover, long-horizon planning is challenging even under
+a perfect model because the search tree grows exponentially with the branching factor and horizon (a
+manifestation of the curse of horizon) [25].
+Hierarchical Reinforcement Learning.To address long-horizon control, prior work has explored hierarchical
+reinforcement learning through temporal abstraction via options and skills [49, 3, 19]. In parallel, many
+model-based RL approaches incorporate hierarchical world models to capture dynamics at multiple temporal
+resolutions [15, 39, 16, 44, 21]. While these methods enable improved long-horizon reasoning, they typically
+rely on task-specific policy learning, which limits their applicability to zero-shot and general-purpose control.
+Hierarchical Model Predictive Control.In the optimal control literature, hierarchical model predictive control
+(MPC) has been explored for long-horizon, multi-task settings [12, 33, 29]. However, existing hierarchical
+MPC approaches are largely restricted to low-dimensional state spaces, hand-engineered representations,
+or known dynamics, limiting their applicability to high-dimensional observation spaces such as raw pixels.
+Contemporaneous visual approaches introduce related hierarchical interfaces, including high-level world-model
+planning paired with a goal-conditioned diffusion policy [14] and lifting a frozen low-level world model through
+a learned high-level-to-low-level action map [54]. In contrast, HWM couples multiple latent world models
+through shared-latent subgoal matching, so both high- and low-level control are performed by MPC over
+learned dynamics rather than by a learned low-level policy. Table 7 summarizes the design axes of previous
+hierarchical model-based methods and how HWM differs from them.
+Method Zero-shot Representation Training Hierarchical Interface
+HWM (ours)✓pixels→latent Next-latent pred.Subgoal matching (latent)
+CAVIN [12]✓structured state Learned dynamics Subgoal matching (state)
+LAT [33]✓structured state Learned dynamics Skill-conditioned policy
+Safe HMPC [29]×structured state Analytical dynamics Reference tracking
+IQL-TD-MPC [9]×state→latent Offline RL + MPC Goal-conditioned policy
+Director,Puppeteer [19, 21]×pixels→latent Model-based RL Goal-conditioned policy
+THICK [15]×pixels→latent MB-RL + reward Subgoal matching (latent)
+Table 7 Comparison of hierarchical model-based methods.HWM is the only entry supporting zero-shot MPC directly
+from pixels, using world models pretrained via next-latent prediction, with predictions from coarser models serving as
+subgoals for finer-scale MPC via latent matching.
+6 Conclusion
+We presented HWM, a hierarchical MPC framework for zero-shot planning with latent world models trained
+from offline trajectories. By learning dynamics at multiple temporal scales in a shared latent space, HWM
+lets high-level predictions serve as subgoals for short-horizon low-level planning, without hierarchical policies,
+task rewards, or manual decomposition. On a real Franka robot, this enables non-greedy pick-and-place from
+11
+
+===== PAGE 12 =====
+a single goal image, where the corresponding single-level planner fails. Across all task settings, the same
+principle improves long-horizon success and reduces planning cost across multiple world-model backbones.
+These results suggest that hierarchy is a practical mechanism for extending latent world-model MPC beyond
+short, greedy behaviors.
+7 Limitations
+Despite these gains, success rates degrade with task horizon for every method we evaluate; closing this gap
+will require further progress in world modeling and planning. First, HWM uses a single latent space across
+hierarchy levels: while this enables direct subgoal transfer, longer horizons and more open-ended environments
+may benefit from coarser, level-specific abstractions. Second, subgoal quality is shaped by choices at training
+and inference. At training time, we supervise the high-level world model with randomly sampled or fixed-stride
+waypoints; skill or subgoal discovery [60, 36, 59], or dynamic chunking [24], could replace this waypoint
+scheme without changing the rest of the framework, potentially yielding better subgoals. At inference time,
+incorporating feedback from the lower-level planner into high-level subgoal optimization may help compensate
+for the loss of detail in high-level predictions needed to guide precise low-level control.
+12
+
+===== PAGE 13 =====
+References
+[1] Mido Assran, Adrien Bardes, David Fan, Quentin Garrido, Russell Howes, Matthew Muckley, Ammar Rizvi,
+Claire Roberts, Koustuv Sinha, Artem Zholus, et al. V-jepa 2: Self-supervised video models enable understanding,
+prediction and planning.arXiv preprint arXiv:2506.09985, 2025.
+[2] Pranav Atreya, Karl Pertsch, Tony Lee, Moo Jin Kim, Arhan Jain, Artur Kuramshin, Clemens Eppner, Cyrus
+Neary, Edward Hu, Fabio Ramos, et al. Roboarena: Distributed real-world evaluation of generalist robot policies.
+InProceedings of the Conference on Robot Learning (CoRL 2025), 2025.
+[3] Pierre-Luc Bacon, Jean Harb, and Doina Precup. The option-critic architecture. InProceedings of the AAAI
+conference on artificial intelligence, volume 31, 2017.
+[4] Marco Bagatella, Matteo Pirotta, Ahmed Touati, Alessandro Lazaric, and Andrea Tirinzoni. TD-JEPA: Latent-
+predictive representations for zero-shot reinforcement learning. InThe Fourteenth International Conference on
+Learning Representations, 2026.https://openreview.net/forum?id=SzXDuBN8M1.
+[5] Yutong Bai, Danny Tran, Amir Bar, Yann LeCun, Trevor Darrell, and Jitendra Malik. Whole-body conditioned
+egocentric video prediction.arXiv preprint arXiv:2506.21552, 2025.
+[6] Amir Bar, Gaoyue Zhou, Danny Tran, Trevor Darrell, and Yann LeCun. Navigation world models. InProceedings
+of the Computer Vision and Pattern Recognition Conference, pages 15791–15801, 2025.
+[7] Adrien Bardes, Jean Ponce, and Yann LeCun. Vicreg: Variance-invariance-covariance regularization for self-
+supervised learning.arXiv preprint arXiv:2105.04906, 2021.
+[8] Jake Bruce, Michael D Dennis, Ashley Edwards, Jack Parker-Holder, Yuge Shi, Edward Hughes, Matthew Lai,
+Aditi Mavalankar, Richie Steigerwald, Chris Apps, et al. Genie: Generative interactive environments. InForty-first
+International Conference on Machine Learning, 2024.
+[9] Rohan Chitnis, Yingchen Xu, Bobak Hashemi, Lucas Lehnert, Urun Dogan, Zheqing Zhu, and Olivier Delalleau.
+Iql-td-mpc: Implicit q-learning for hierarchical model predictive control. In2024 IEEE International Conference
+on Robotics and Automation (ICRA), pages 9154–9160. IEEE, 2024.
+[10] Marc Deisenroth and Carl E Rasmussen. Pilco: A model-based and data-efficient approach to policy search. In
+Proceedings of the 28th International Conference on machine learning (ICML-11), pages 465–472, 2011.
+[11] Frederik Ebert, Chelsea Finn, Alex X Lee, and Sergey Levine. Self-supervised visual planning with temporal skip
+connections.CoRL, 12:23, 2017.
+[12] Kuan Fang, Yuke Zhu, Animesh Garg, Silvio Savarese, and Li Fei-Fei. Dynamics learning with cascaded variational
+inference for multi-step manipulation.arXiv preprint arXiv:1910.13395, 2019.
+[13] Raktim Gautam Goswami, Amir Bar, David Fan, Tsung-Yen Yang, Gaoyue Zhou, Prashanth Krishnamurthy,
+Michael Rabbat, Farshad Khorrami, and Yann LeCun. World models can leverage human videos for dexterous
+manipulation.arXiv preprint arXiv:2512.13644, 2025.
+[14] Raktim Gautam Goswami, Prashanth Krishnamurthy, Yann LeCun, and Farshad Khorrami. Unifying object-
+centric world models and diffusion policy: A hierarchical framework for multi-stage robotic tasks.arXiv preprint
+arXiv:2606.08775, 2026.
+[15] Christian Gumbsch, Noor Sajid, Georg Martius, and Martin V Butz. Learning hierarchical world models with
+adaptive temporal abstractions from discrete latent dynamics. InThe Twelfth International Conference on
+Learning Representations, 2023.
+[16] Nico Gürtler and Georg Martius. Long-horizon planning with predictable skills.Reinforcement Learning Journal,
+2025.
+[17] David Ha and Jürgen Schmidhuber. World models.arXiv preprint arXiv:1803.10122, 2, 2018.
+[18] Danijar Hafner, Timothy Lillicrap, Ian Fischer, Ruben Villegas, David Ha, Honglak Lee, and James Davidson.
+Learning latent dynamics for planning from pixels. InInternational conference on machine learning, pages
+2555–2565. PMLR, 2019.
+[19] Danijar Hafner, Kuang-Huei Lee, Ian Fischer, and Pieter Abbeel. Deep hierarchical planning from pixels.Advances
+in Neural Information Processing Systems, 35:26091–26104, 2022.
+13
+
+===== PAGE 14 =====
+[20] Danijar Hafner, Jurgis Pasukonis, Jimmy Ba, and Timothy Lillicrap. Mastering diverse domains through world
+models.arXiv preprint arXiv:2301.04104, 2023.
+[21] Nicklas Hansen, Jyothir SV, Vlad Sobal, Yann LeCun, Xiaolong Wang, and Hao Su. Hierarchical world models as
+visual whole-body humanoid controllers.arXiv preprint arXiv:2405.18418, 2024.
+[22] Anthony Hu, Lloyd Russell, Hudson Yeo, Zak Murez, George Fedoseev, Alex Kendall, Jamie Shotton, and Gianluca
+Corrado. Gaia-1: A generative world model for autonomous driving.arXiv preprint arXiv:2309.17080, 2023.
+[23] Yucheng Hu, Yanjiang Guo, Pengchao Wang, Xiaoyu Chen, Yen-Jen Wang, Jianke Zhang, Koushil Sreenath,
+Chaochao Lu, and Jianyu Chen. Video prediction policy: A generalist robot policy with predictive visual
+representations.arXiv preprint arXiv:2412.14803, 2024.
+[24] Sukjun Hwang, Brandon Wang, and Albert Gu. Dynamic chunking for end-to-end hierarchical sequence modeling.
+arXiv preprint arXiv:2507.07955, 2025.
+[25] Brian Ichter, Pierre Sermanet, and Corey Lynch. Broadly-exploring, local-policy trees for long-horizon task
+planning.arXiv preprint arXiv:2010.06491, 2020.
+[26] Physical Intelligence, Kevin Black, Noah Brown, James Darpinian, Karan Dhabalia, Danny Driess, Adnan
+Esmail, Michael Equi, Chelsea Finn, Niccolo Fusai, et al.π0.5: a vision-language-action model with open-world
+generalization.arXiv preprint arXiv:2504.16054, 2025.
+[27] Michael Janner, Justin Fu, Marvin Zhang, and Sergey Levine. When to trust your model: Model-based policy
+optimization.Advances in neural information processing systems, 32, 2019.
+[28] Alexander Khazatsky, Karl Pertsch, Suraj Nair, Ashwin Balakrishna, Sudeep Dasari, Siddharth Karamcheti,
+Soroush Nasiriany, Mohan Kumar Srirama, Lawrence Yunliang Chen, Kirsty Ellis, et al. Droid: A large-scale
+in-the-wild robot manipulation dataset.arXiv preprint arXiv:2403.12945, 2024.
+[29] Markus Kögel, Mohamed Ibrahim, Christian Kallies, and Rolf Findeisen. Safe hierarchical model predictive control
+and planning for autonomous systems.International Journal of Robust and Nonlinear Control, 35:2658–2676,
+2025.
+[30] Ilya Kostrikov, Ashvin Nair, and Sergey Levine. Offline reinforcement learning with implicit q-learning.arXiv
+preprint arXiv:2110.06169, 2021.
+[31] Vikash Kumar, Rutav Shah, Gaoyue Zhou, Vincent Moens, Vittorio Caggiano, Abhishek Gupta, and Aravind
+Rajeswaran. Robohive: A unified framework for robot learning.Advances in Neural Information Processing
+Systems, 36:44323–44340, 2023.
+[32] Shuang Li, Yihuai Gao, Dorsa Sadigh, and Shuran Song. Unified video action model.arXiv preprint
+arXiv:2503.00200, 2025.
+[33] Tianyu Li, Roberto Calandra, Deepak Pathak, Yuandong Tian, Franziska Meier, and Akshara Rai. Planning
+in learned latent action spaces for generalizable legged locomotion.IEEE Robotics and Automation Letters, 6:
+2682–2689, 2021.
+[34] Yue Liao, Pengfei Zhou, Siyuan Huang, Donglin Yang, Shengcong Chen, Yuxin Jiang, Yue Hu, Jingbin Cai, Si Liu,
+Jianlan Luo, et al. Genie envisioner: A unified world foundation platform for robotic manipulation.arXiv preprint
+arXiv:2508.05635, 2025.
+[35] Lucas Maes, Quentin Le Lidec, Damien Scieur, Yann LeCun, and Randall Balestriero. Leworldmodel: Stable
+end-to-end joint-embedding predictive architecture from pixels.arXiv preprint arXiv:2603.19312, 2026.
+[36] Pietro Mazzaglia, Tim Verbelen, Bart Dhoedt, Alexandre Lacoste, and Sai Rajeswar. Choreographer: Learning
+and adapting skills in imagination.arXiv preprint arXiv:2211.13350, 2022.
+[37] Suraj Nair, Aravind Rajeswaran, Vikash Kumar, Chelsea Finn, and Abhinav Gupta. R3m: A universal visual
+representation for robot manipulation.arXiv preprint arXiv:2203.12601, 2022.
+[38] Maxime Oquab, Timothée Darcet, Théo Moutakanni, Huy Vo, Marc Szafraniec, Vasil Khalidov, Pierre Fernandez,
+Daniel Haziza, Francisco Massa, Alaaeldin El-Nouby, et al. Dinov2: Learning robust visual features without
+supervision.arXiv preprint arXiv:2304.07193, 2023.
+[39] Seohong Park, Dibya Ghosh, Benjamin Eysenbach, and Sergey Levine. Hiql: Offline goal-conditioned rl with
+latent states as actions.Advances in Neural Information Processing Systems, 36:34866–34891, 2023.
+14
+
+===== PAGE 15 =====
+[40] Seohong Park, Kevin Frans, Benjamin Eysenbach, and Sergey Levine. Ogbench: Benchmarking offline goal-
+conditioned rl.arXiv preprint arXiv:2410.20092, 2024.
+[41] Seohong Park, Tobias Kreiman, and Sergey Levine. Foundation policies with hilbert representations.arXiv
+preprint arXiv:2402.15567, 2024.
+[42] Karl Pertsch, Kyle Stachowicz, Brian Ichter, Danny Driess, Suraj Nair, Quan Vuong, Oier Mees, Chelsea
+Finn, and Sergey Levine. Fast: Efficient action tokenization for vision-language-action models.arXiv preprint
+arXiv:2501.09747, 2025.
+[43] Reuven Y Rubinstein and Dirk P Kroese.The cross-entropy method: a unified approach to combinatorial
+optimization, Monte-Carlo simulation and machine learning. Springer Science & Business Media, 2004.
+[44] Robin Schiewer, Anand Subramoney, and Laurenz Wiskott. Exploring the limits of hierarchical world models in
+reinforcement learning.Scientific Reports, 14:26856, 2024.
+[45] Max Schwarzer, Ankesh Anand, Rishab Goel, R Devon Hjelm, Aaron Courville, and Philip Bachman. Data-efficient
+reinforcement learning with self-predictive representations.arXiv preprint arXiv:2007.05929, 2020.
+[46] Vlad Sobal, Wancong Zhang, Kyunghyun Cho, Randall Balestriero, Tim GJ Rudner, and Yann LeCun. Learning
+from reward-free offline data: A case for planning with latent dynamics models.arXiv preprint arXiv:2502.14819,
+2025.
+[47] Richard S Sutton. An adaptive network that constructs and uses and internal model of its world.Cognition and
+Brain Theory, 4:217–246, 1981.
+[48] Richard S Sutton. Dyna, an integrated architecture for learning, planning, and reacting.ACM Sigart Bulletin, 2:
+160–163, 1991.
+[49] Richard S Sutton, Doina Precup, and Satinder Singh. Between mdps and semi-mdps: A framework for temporal
+abstraction in reinforcement learning.Artificial intelligence, 112:181–211, 1999.
+[50] Erik Talvitie. Model regularization for stable sample rollouts. InUAI, pages 780–789, 2014.
+[51] Octo Model Team, Dibya Ghosh, Homer Walke, Karl Pertsch, Kevin Black, Oier Mees, Sudeep Dasari, Joey Hejna,
+Tobias Kreiman, Charles Xu, et al. Octo: An open-source generalist robot policy.arXiv preprint arXiv:2405.12213,
+2024.
+[52] Basile Terver, Tsung-Yen Yang, Jean Ponce, Adrien Bardes, and Yann LeCun. What drives success in physical
+planning with joint-embedding predictive world models?, 2026.https://arxiv.org/abs/2512.24497.
+[53] Emanuel Todorov, Tom Erez, and Yuval Tassa. Mujoco: A physics engine for model-based control. InIROS,
+pages 5026–5033. IEEE, 2012. ISBN 978-1-4673-1737-5.http://dblp.uni-trier.de/db/conf/iros/iros2012.html#
+TodorovET12.
+[54] Alex N. Wang, Trevor Darrell, Pavel Izmailov, Yutong Bai, and Amir Bar. Lifting embodied world models for
+planning and control.arXiv preprint arXiv:2604.26182, 2026.
+[55] Manuel Watter, Jost Springenberg, Joschka Boedecker, and Martin Riedmiller. Embed to control: A locally linear
+latent dynamics model for control from raw images.Advances in neural information processing systems, 28, 2015.
+[56] Grady Williams, Nolan Wagener, Brian Goldfain, Paul Drews, James M Rehg, Byron Boots, and Evangelos A
+Theodorou. Information theoretic mpc for model-based reinforcement learning. In2017 IEEE international
+conference on robotics and automation (ICRA), pages 1714–1721. IEEE, 2017.
+[57] Mengjiao Yang, Yilun Du, Kamyar Ghasemipour, Jonathan Tompson, Dale Schuurmans, and Pieter Abbeel.
+Learning interactive real-world simulators.arXiv preprint arXiv:2310.06114, 1:6, 2023.
+[58] Seonghyeon Ye, Yunhao Ge, Kaiyuan Zheng, Shenyuan Gao, Sihyun Yu, George Kurian, Suneel Indupuru,
+You Liang Tan, Chuning Zhu, Jiannan Xiang, et al. World action models are zero-shot policies.arXiv preprint
+arXiv:2602.15922, 2026.
+[59] He Zhang, Ming Zhou, Shaopeng Zhai, Ying Sun, and Hui Xiong. Efficient skill discovery via regret-aware
+optimization.arXiv preprint arXiv:2506.21044, 2025.
+[60] Jesse Zhang, Haonan Yu, and Wei Xu. Hierarchical reinforcement learning by discovering intrinsic options.arXiv
+preprint arXiv:2101.06521, 2021.
+15
+
+===== PAGE 16 =====
+[61] Wancong Zhang, Anthony GX-Chen, Vlad Sobal, Yann LeCun, and Nicolas Carion. Light-weight probing of
+unsupervised representations for reinforcement learning.arXiv preprint arXiv:2208.12345, 2022.
+[62] Gaoyue Zhou, Hengkai Pan, Yann LeCun, and Lerrel Pinto. Dino-wm: World models on pre-trained visual
+features enable zero-shot planning.arXiv preprint arXiv:2411.04983, 2024.
+16
+
+===== PAGE 17 =====
+Appendix Contents
+A Training Details 18
+A.1 Low Level World Model . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 18
+A.2 Franka Arm with Robotiq Gripper . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 18
+A.3 Push-T . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 19
+A.4 Diverse Maze . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 19
+B Planning Details 20
+C Computational Analysis Details 20
+C.1 Push-T . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 20
+C.2 Diverse Maze . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 21
+D Additional Ablations and Analysis 22
+D.1 Strides for Fixed Interval Waypoints . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 22
+D.2 Model Size vs. Hierarchy . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 23
+E Visualizing World Model Predictions 23
+F Robot Task Definitions 25
+G Per-Configuration Trial Breakdown for Franka 26
+H Additional Execution Rollouts for Franka 27
+I Offline Planning Evaluation for Franka 28
+J Baselines 28
+J.1 Vision-Language-Action Models . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 28
+J.2 Goal-Conditioned & Zero-Shot RL Methods . . . . . . . . . . . . . . . . . . . . . . . . . . . . 29
+17
+
+===== PAGE 18 =====
+A Training Details
+A.1 Low Level World Model
+We train the low-level latent world modelF (1)
+θ to approximate the true transition dynamicsst+1 = f (st, at).
+Given a trajectory sequenceτ = ( s1, a1, s2, a2, . . . , sT ), we first encode the states independently to obtain
+a sequence of latent features( zk)k∈[T]. We feed the interleaved sequence of actions and latent features
+(ak, zk)k∈[T] into the world model to obtain a sequence of next state representation predictions(ˆzk+1)k∈[T].
+The teacher-forcing loss is computed as:
+ˆzk+1 :=F (1)
+θ ((at, zt)t≤k)
+Ltf (θ) := 1
+T
+TX
+k=1
+∥ˆzk+1 −z k+1∥1 .
+(1)
+To mitigate compounding prediction errors over multiple steps, we additionally compute a multi-step autoregres-
+sive rollout loss. LetF (1)
+θ (ak:j ; zk)denote the final predicted state representation obtained by autoregressively
+running the world model with an action sequenceak:T, starting fromzk. We denote the rollout loss with
+prediction horizonTas:
+Lroll(θ) :=
+TX
+j=2
+∥F (1)
+θ (a1:j, z1)−z j+1∥1 (2)
+The overall training objective is given by a weighted sum of the two quantities:
+L(θ) :=γ tf ∗ Ltf (θ) +γ roll ∗ Lroll(θ)(3)
+A.2 Franka Arm with Robotiq Gripper
+Data.We use approximately 96 hours of unlabeled videos from the DROID dataset [28] and 30 hours from
+RoboSet [31]. Both datasets consist of short video clips of manipulation trajectories collected from real robots.
+Observations include RGB images and end-effector proprioception; actions correspond to end-effector delta
+poses.
+State, Actions, and Preprocessing.Videos are sampled at a spatial resolution of256× 256and with a frame
+rate uniformly sampled from(3, 10)FPS for DROID and(1 , 5)FPS for RoboSet. At timestep k, the state is
+defined as sk = (xk, pk), where xk is the raw RGB observation andpk ∈R 7 is the end-effector state expressed
+in the robot base frame. The first three dimensions ofpk correspond to Cartesian position, the next three
+correspond to orientation represented as extrinsic Euler angles, and the final dimension represents the gripper
+state. Actions are defined as differences in end-effector state between consecutive frames:ak = pk+1 −p k. We
+apply random resize-and-crop augmentations to video clips, with the aspect ratio sampled uniformly from
+(0.75,1.33).
+Low Level World Model.Following the setup of VJEPA2-AC [1], we sample fixed-length trajectories ofT = 15
+timesteps, {(ak, pk, xk)}k∈15. Each image xk is encoded using the pretrained, frozen ViT-g/16 backbone,
+producing latent feature maps(zk)k∈15. The world model is instantiated as a∼300M-parameter ViT. It takes
+temporally interleaved sequences of latent features, end-effector states, and actions{(zk, pk, ak)}k∈15 and
+predicts the next-step latent representations{ˆzk+1}k∈15. We refer to the VJEPA2 paper for full architectural
+details.
+High-Level World Model.To train the high-level world model, we sample variable-length trajectory segments
+{(ak, pk, xk)}k∈T spanning(0 .33, 4)seconds and select N = 3waypoint indices per segment, with the middle
+waypoint sampled uniformly at random. The high-level world model shares the same ViT architecture as the
+low-level model, but is conditioned on latent macro-actions rather than primitive actions. Conditioned on
+the current and previous waypoints and macro-actions, it is trained via teacher forcing to predict the next
+waypoint. Latent macro-actions are produced by a transformer-based action encoderAψ, where the CLS
+token is passed through an MLP head to obtain the macro-action.
+18
+
+===== PAGE 19 =====
+World Model Epochs Batch Sizeγ tf γroll contextT
+VJEPA2-AC (Low-Level) 200 256 1.0 1.0 16
+VJEPA2-AC (High-Level) 120 768 1.0 0.0 3
+Table 8 Training hyperparameters for Droid + Roboset. γtf and γroll denote the coefficients for teacher-forcing and rollout
+losses respectively, andT specifies the model context length. Other hyperparameters follow those used by VJEPA2-AC.
+A.3 Push-T
+Data.We use the offline dataset from DINO-WM, which consists of 18500 trajectories. Each trajectory
+consists of a sequence of(xt, at, pt), where xt is an RGB observation,at is a 2D action vector, andpt is the
+proprioceptive state denoting current agent position and velocity.
+Low Level World Model.We use DINO-WM [62] as our low-level world model. The encoder is a pretrained
+DINOv2 network [38], which is kept frozen during training. The world model is a 25M params ViT with
+causal masking that attends to past actions and latent states(ak, zk)k∈T over a context window ofT = 5.
+Each transition k→k + 1corresponds to a stride of 5 frames in the original dataset. As a result, DINO-WM
+models over an effective horizon of5T = 25timesteps in the original trajectory. The actionak is formed by
+concatenating the 5 primitive actions executed betweenk and k + 1, yielding a5 × 2 = 10–dimensional action
+vector. Causal attention is implemented at the patch level: each latent patch vectorzi
+k attends only to its
+corresponding patches zi
+k−T:k−1 from previous timesteps. Actions are first embedded using an MLP and then
+concatenated to each patch vectorzi
+k. Proprioceptive inputs are incorporated using the same embedding and
+concatenation scheme. We refer to the original DINO-WM paper for full architectural details.
+High-Level World Model.To construct training sequences, we subsample trajectory segments with lengths
+uniformly drawn between 25 and 70 timesteps. From each segment, we sampleN = 5waypoint states, which
+define the high-level transitions. The high-level world model is a scaled-up variant of the low-level world model
+(25M → 75M parameters), obtained by increasing the number of layers from 6 to 10, the embedding dimension
+from 384 to 768, and the MLP dimension from 2048 to 3072, while reducing the number of attention heads
+from 16 to 12. This increased capacity enables more effective modeling of long-horizon dynamics. Latent
+macro-actions are produced by a transformer-based action encoderAψ, where the CLS token is passed through
+an MLP head to obtain the macro-action representation. See table 9 for hyperparameters.
+World Model Epochs Batch Sizeγ tf γroll contextT
+DINO-WM (Low-Level) 100 256 1.0 0.0 4
+DINO-WM (High-Level) 500 128 1.0 0.0 5
+Table 9 Training hyperparameters for Push-T. γtf and γroll denote the coefficients for teacher-forcing and rollout losses,
+respectively, and context T specifies the model context length. All other hyperparameters follow those used by
+DINO-WM on Push-T.
+A.4 Diverse Maze
+Environment.The environment is a variant of Mujoco PointMaze [53], which contains a point mass agent with
+a 4D state vector(globalx,globaly, v x, vy), where v is the agent velocity. The model receives a top down
+view of the maze rendered as(98, 98, 3)RGB image tensor as input, instead of relying on(globalx,global )
+directly. Mujoco PointMaze allows for customization of the maze layout via a grid structure, where a grid cell
+can either be a wall or space. We opt for a8× 8grid (excluding outer wall). Maze layouts are generated
+randomly. Only the following constraints are enforced: 1) all the space cells are interconnected, 2) percentage
+of space cells range from50%to80%.
+Data.Each episode is initialized by placing the agent at a random(x, y)location in the maze and sampling an
+initial velocity( vx, vy). A trajectory is then generated by randomly sampling and executing actions for 100
+steps, using an action repeat of 4. We collect 2,000 episodes per map and use 25 maps for training; resulting
+in a total of 5M transitions.
+19
+
+===== PAGE 20 =====
+Low Level World Model.We train the low-level world model following the PLDM recipe [46], jointly learning the
+encoder and world model from scratch using offline trajectories. Each training sample consists of a sequence of
+15 timesteps of observations and actions subsampled from a trajectory. The observation sequence is encoded
+by a convolutional network into spatial latent featuresz1:15. Conditioned on the initial latentz1 and the
+action sequencea 1:15, a convolutional world model autoregressively predicts the future latent sequenceˆz1:15.
+To prevent representational collapse, we apply VICReg [7] to the latent featuresz1:15, following the original
+PLDM formulation. Refer to table 10 for hyperparameters. We use the same PLDM architecture for Diverse
+Maze, comprising a lightweight convolutional encoder (33k params) and predictor (20k params); we refer to
+the original paper for full details.
+High-Level World Model.To construct training sequences, we subsample 60 timesteps from each trajectory
+and extract 6 waypoint states using a fixed stride of 10 timesteps. Primitive action chunks are encoded
+into an 8-dimensional macro-action via an MLP. We reuse the backbone of a pretrained low-level world
+model and keep it frozen, training only the high-level world model. The high-level model is a higher-capacity
+convolutional network, enabling long-horizon prediction. Conditioned on the initial waypoint latentz1 and
+the macro-action sequencel1:6, it autoregressively predicts subsequent waypoint latents. Hyperparameters are
+provided in table 10.
+World Model Epochs Batch Size lrα β λ ω γ tf γroll predTL proprio
+PLDM (Low-Level) 3 128 0.018 29.4 17.9 2.80 4.81 0.0 1.0 15 2.42
+PLDM (High-Level) 5 128 0.018 – – – – 0.0 1.0 6 1
+Table 10 Training hyperparameters for Diverse Maze. α, β, λ, and ω are parameters in the PLDM objective used to
+prevent representation collapse.Lproprio coef. denotes the coefficient on the proprioceptive prediction loss.γtf and
+γroll are the coefficients for teacher-forcing and rollout losses, and predT is the number of prediction rollouts during
+training. For the high-level world model, we reuse the encoder trained at the low level and keep it frozen, eliminating
+additional representation learning.
+B Planning Details
+For Franka and Push-T, we use the Cross-Entropy Method (CEM) [43] for trajectory optimization in continuous
+action spaces. At each planning step, CEM maintains a factorized Gaussian over action sequences, iteratively
+sampling trajectories, evaluating them with the world model, and refitting to elite samples by updating the
+mean and variance. To improve stability and avoid premature collapse, variance updates are smoothed with
+an exponential moving average. After a fixed number of iterations, the optimized mean action sequence is
+executed, and planning proceeds in a receding-horizon manner. See table 11 and table 12 for the single-level
+and hierarchical planner parameters, respectively.
+For Diverse Maze, we use Model Predictive Path Integral (MPPI) [56] for planning. MPPI updates a nominal
+action sequence by importance-weighting sampled trajectories using exponential costs; unlike CEM, it applies
+soft weights over all samples, yielding smoother updates without hard elite selection. We use the MPPI
+implementation from PLDM [46]. See table 13 and table 14 for the single-level and hierarchical planner
+hyperparameters, respectively.
+C Computational Analysis Details
+C.1 Push-T
+For the compute scaling analysis of Fig. 5 and Fig. 8, we performed a grid search over the key CEM
+hyperparameters of both high-level and low-level planners.
+For d = 50in Fig. 5, for the high level planner, we swept# samples∈ [150, 300, 600, 900, 1200, 1500],
+#iters∈ [10, 20, 30, 40], andVar EMA∈ [0.4, 0.7, 0.9]. For the low-level planner (both when used standalone
+and as the low-level planner in the hierarchical setting), we swept#samples∈ [150, 300, 600, 900, 1200],
+#iters∈[10,20,30,40], and Var EMA∈[0,0.4,0.7,0.8,0.9].
+20
+
+===== PAGE 21 =====
+# elites # iters # samples Var EMA predh k
+Franka 20 15 2400 0.75 6 1
+Push-T (d= 25) 30 30 300 0 5 5
+Push-T (d= 50) 10 30 1200 0.9 10 5
+Push-T (d= 75) 20 20 1000 0 15 5
+Table 11Single-level World Model Planning CEM hyperparameters for Franka and Push-T tasks. Predh indicates
+prediction horizon.
+High-level planner Low-level planner
+# elites # iters # samples Var EMA predH# elites # iters # samples Var EMA predh k
+Franka 22 15 3000 0.65 2 12 5 800 0.25 2 1
+Push-T(d= 25) 10 20 900 0 2 10 30 300 0 5 5
+Push-T(d= 50) 10 40 1500 0.9 4 10 20 900 0.8 5 5
+Push-T(d= 75) 10 20 1200 0.9 5 10 20 1200 0.8 5 5
+Table 12Hierarchical Planning CEM hyperparameters for Franka and Push-T tasks. PredH and h indicate prediction
+horizons for the high-level and low-level planners respectively.
+noiseσ# samplesλpredh k
+Maze (D∈[5,8]) 5 125 0.0025 150 4
+Maze (D∈[9,12]) 5 250 0.0025 200 4
+Maze (D∈[13,16]) 5 250 0.0025 250 4
+Table 13Single-level World Model Planning MPPI hyperparameters for Diverse Maze tasks. Predh indicates prediction
+horizon.
+High-level planner Low-level planner
+noiseσ# samplesλpredHnoiseσ# samplesλpredh k
+Maze (D∈[5,8]) 10 2000 0.0025 25 5 500 0.0025 15 4
+Maze (D∈[9,12]) 10 2000 0.0025 35 5 500 0.0025 15 4
+Maze (D∈[13,16]) 10 4000 0.0025 47 5 1000 0.0025 15 4
+Table 14Hierarchical Planning MPPI hyperparameters for Diverse Maze tasks. PredH and h indicate prediction
+horizons for the high-level and low-level planners respectively.
+For d = 75, forthehigh-levelplanner, wesweptthenumberofsamples# samples∈ [150, 300, 600, 900, 1200, 1500],
+the number of CEM iterations#iters∈ [10, 20, 30, 40], and the standard deviation momentum coefficient
+Var EMA∈ [0.4, 0.7, 0.9]. Forthelow-levelplanner, weswept# samples∈ [150, 300, 600, 900, 1000, 1100, 1200, 1500],
+#iters∈[10,20,25,30,35,40], and Var EMA∈[0,0.4,0.5,0.7,0.8,0.9,0.95].
+This sweep over CEM hyperparameters enables constructing Pareto frontiers that characterize the trade-off
+between planning compute (mean time per plan) and task success rate.
+C.2 Diverse Maze
+For the compute scaling analysis of the Diverse Maze environment in Fig. 5 and 9, we performed a grid search
+over the number of samples and horizon of planning in the MPPI algorithm. We perform the same sweep for
+all 3 difficulty settings.
+For the single-level baseline, we swept the number of samples#samples∈ [70, 125, 250, 500, 1000, 2000, 4000]
+and the horizon∈[100,125,150,175,200,225,250,275].
+21
+
+===== PAGE 22 =====
+40 80 120 160 200 240 280 320
+Mean Time per Plan (ms)
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+Success Rate
+30 60 90 120 150 180 210 240
+Mean Time per Plan (ms)
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+Success Rate
+DINO-WM DINO-WM (hierarchy)
+Figure 8Success rate as a function of test-time compute for Push-T.Left: Settingd= 50.Right: Settingd= 75.
+60 120 180 240 300 360 420 480 540 600
+Mean Time per Plan (ms)
+0.2
+0.4
+0.6
+0.8
+1.0
+Success Rate
+150 300 450 600 750 900 1050
+Mean Time per Plan (ms)
+0.2
+0.4
+0.6
+0.8
+1.0
+Success Rate
+PLDM PLDM (hierarchy)
+Figure 9Success rate as a function of test-time compute for Diverse Maze.Left: SettingD∈ [9, 12].Right: Setting
+D∈[13,16].
+For the hierarchical planner, we have a low-level planner and a high-level planner, each of which has a number of
+samples. Wesweptthenumberofsamplesofthelow-levelplanner# samples∈ [70, 125, 250, 500, 1000, 2000, 4000],
+the number of samples of the high-level planner#samples∈ [70, 125, 250, 500, 1000, 2000, 4000]and the horizon
+of the high-level plannerH∈ [25, 35, 45]. This comprehensive sweep over MPPI hyperparameters enables
+the construction of Pareto frontiers that characterize the trade-off between planning compute time and the
+success rate.
+D Additional Ablations and Analysis
+D.1 Strides for Fixed Interval Waypoints
+For Diverse Maze, the high-level world model is trained using fixed temporal strides between successive latent
+waypoints. We evaluate the sensitivity of hierarchical planning performance to this stride by varying it across
+a range of values. As shown in Table 15, performance improves as the stride increases from 6 to 12 timesteps,
+suggesting that moderate temporal abstraction is beneficial for long-horizon planning. However, performance
+slightly degrades at larger strides, indicating a trade-off between abstraction and predictive fidelity. Overall,
+the results demonstrate that hierarchical planning is robust to the choice of stride, with strong performance
+across a broad range of values.
+High-level stride 6 8 10 12 14
+Success Rate (D∈[13,16]) 50% 55% 77% 78% 75%
+Table 15Sensitivity of hierarchical planning performance to the high-level temporal stride on Diverse Maze.
+22
+
+===== PAGE 23 =====
+D.2 Model Size vs. Hierarchy
+One question is whether the gains from hierarchical planning arise from compositional structure at planning
+time, or simply from increased model capacity. To disentangle these effects, we compare hierarchical models
+against single-level world models with matched or larger parameter counts. As shown in Table 16, increasing the
+capacity of single-level models does not improve performance—in fact, it often degrades it—while hierarchical
+models consistently achieve higher success rates across both tasks. This suggests that the gains stem from
+hierarchical composition rather than model size alone.
+Method ParamsH=10H=15
+DINO-WM (flat)44M55% 17%
+DINO-WM (flat)98M35% 15%
+DINO-WM (hierarchy)94M78% 61%
+(a)Push-T
+Method ParamsD∈[9,12]D∈[13,16]
+PLDM (flat)54k85% 63%
+PLDM (flat)178k82% 59%
+PLDM (hierarchy)182k95% 83%
+(b)Diverse Maze
+Table 16Capacity-controlled comparison between flat and hierarchical world models. Flat models with comparable or
+larger parameter counts fail to match hierarchical performance, and sometimes degrade with increased capacity. In
+contrast, hierarchical models consistently outperform flat baselines on Push-T and Diverse Maze, indicating that gains
+arise from hierarchical structure rather than model capacity.
+E Visualizing World Model Predictions
+Franka Arm with Robotiq Gripper.To reconstruct RGB images from latent representations, we train on DROID
+a ViT decoder that maps the frozen V-JEPA 2 encoder features back to pixel space. The decoder takes as input
+the encoded features of dimension 1408 (matching the V-JEPA 2 ViT-Giant encoder output) and projects them
+to an intermediate dimension of 1024 via a linear layer. The architecture consists of 12 transformer blocks,
+each with 32 attention heads and an MLP ratio of 4, using GELU activations, LayerNorm and sinusoidal 2D
+positional embeddings. The decoder operates on a32× 32grid of spatial tokens (corresponding to patch size
+8 for256 × 256images). The model is trained using anL1 reconstruction loss on normalized pixel values. We
+train the decoder for 100 epochs on the DROID dataset using the AdamW optimizer with a peak learning
+rate of5 × 10−4, linear warmup over 2 epochs, cosine decay to10−6, and weight decay of0.1. Training is
+performed on 8 nodes with a total batch size of 512.
+Push-T.
+Similarly as for the DROID decoder depicted above, we train a ViT decoder that maps the frozen DINOv2 ViT-
+S/14 encoder features back to pixel space on the Push-T dataset. The decoder is a ViT-Base of intermediate
+dimension of 768 with 12 transformer blocks, each with 16 attention heads. It operates on a28× 28grid
+of spatial tokens (corresponding to patch size 8 for224× 224images). The model is trained using anL2
+reconstruction loss on normalized pixel values for 40 epochs on the PushT dataset with a total batch size of
+256.
+Diverse Maze.To visualize predictions and plans, we train a lightweight convolutional prober that takes as
+input a spatial representation of shape(H, W, C). The prober consists of two convolution–pooling stages
+followed by a fully connected layer, and outputs 2-D coordinates corresponding to the agent’s(x, y)location.
+We show visualizations of successful high-level plans in Fig. 10.
+23
+
+===== PAGE 24 =====
+Figure 10 High-level plans in Diverse Maze.The agent is shown as a green ball and the goal as a yellow star. The pink
+trajectory is generated by the high-level planner, while the teal trajectory is generated by the single-level planner. In
+these trials, the high-level planner successfully produces a sequence of subgoals that lead to the goal, whereas the
+single-level planner often struggles due to the increased search complexity of long-horizon prediction.
+24
+
+===== PAGE 25 =====
+F Robot Task Definitions
+Fig. 11 depicts the initial and goal states defining the evaluation episodes for the Pick-&-Place Cup and
+Drawer tasks. We omit the Pick-&-Place Box tasks, which use identical start and goal configurations and
+differ only in the grasped object (a box rather than a cup).
+(a) Drawer Tasks (Start | Goal)
+Open 0
+ Open 1
+ Open 3
+Close 0
+ Close 1
+ Close 2
+Close 4
+(b) Pick-and-Place Tasks (Start | Goal)
+PnP 0
+ PnP 1
+ PnP 2
+PnP 3
+ PnP 4
+ PnP 5
+PnP 6
+ PnP 7
+ PnP 8
+PnP 9
+Figure 11Initial and goal states for all evaluation tasks.(a) Drawer Tasks:7 subtasks involving opening and closing
+drawers at various positions.(b) Pick-&-Place Cup Tasks:10 subtasks requiring the robot to pick up a cup and place it
+at different target locations. Each panel shows the initial state (left) and goal state (right) for a given task.
+25
+
+===== PAGE 26 =====
+G Per-Configuration Trial Breakdown for Franka
+We run N = 5independent trials per (start, goal) configuration for both VJEPA2-AC and HWM on all
+pick-&-place and drawer tasks, yielding50total trials per object on pick-&-place and35on drawer. Aggregate
+success rates are reported in Table 1; per-configuration breakdowns and 95% Clopper–Pearson confidence
+intervals are in Table 17.
+Per-configuration outcomes are highly consistent. For VJEPA2-AC, every configuration is fully deterministic
+(5/5 identical outcomes across all27configurations,135 /135trials). For HWM,21 /27configurations are fully
+deterministic, and the remaining6reproduce the modal outcome in4/5trials (129 /135 = 95 .6%of trials
+match modal). Aggregate success rates therefore reflect per-configuration task difficulty rather than execution
+stochasticity.
+Table 17Per-configuration success counts (successes / trials) on Franka, with 95% Clopper–Pearson confidence intervals
+on aggregate rates. Configurations correspond to the start–goal pairs visualized in appendix F.
+Config VJEPA2-AC HWM (ours)
+PnP 0 0/5 0/5
+PnP 1 0/5 5/5
+PnP 2 0/5 5/5
+PnP 3 0/5 5/5
+PnP 4 0/5 5/5
+PnP 5 0/5 4/5
+PnP 6 0/5 1/5
+PnP 7 0/5 5/5
+PnP 8 0/5 0/5
+PnP 9 0/5 5/5
+Total 0/50 35/50
+95% CI[0.0, 7.1] [55.4, 82.1]
+(a)Pick-&-Place Cup
+Config VJEPA2-AC HWM (ours)
+PnP 0 0/5 0/5
+PnP 1 0/5 1/5
+PnP 2 0/5 4/5
+PnP 3 0/5 5/5
+PnP 4 0/5 5/5
+PnP 5 0/5 4/5
+PnP 6 0/5 1/5
+PnP 7 0/5 5/5
+PnP 8 0/5 0/5
+PnP 9 0/5 5/5
+Total 0/50 30/50
+95% CI[0.0, 7.1] [45.2, 73.6]
+(b)Pick-&-Place Box
+Config Open 0 Open 1 Open 3 Close 0 Close 1 Close 2 Close 4 Total 95% CI
+VJEPA2-AC 5/5 0/5 0/5 5/5 0/5 0/5 0/5 10/35[14.6, 46.3]
+HWM (ours) 5/5 5/5 0/5 5/5 5/5 5/5 0/5 25/35[53.7, 85.4]
+(c)Drawer (opening and closing)
+26
+
+===== PAGE 27 =====
+H Additional Execution Rollouts for Franka
+Subgoal Goalt=0 t=2 t=4 t=6 t=8 t=10
+FailureFailure Failure
+Figure 12Executions on pick-&-place and drawer manipulation with a dual-gripper Franka arm. Dotted red columns
+indicate subgoals inferred by the high-level planner and decoded for visualization. Rows representing failed episodes
+are labeled with "Failure". Additional execution videos can be found inhttps://kevinghst.github.io/HWM/.
+27
+
+===== PAGE 28 =====
+I Offline Planning Evaluation for Franka
+Since planning on a real robot is time-consuming and not parallelizable, we introduce a quantitative offline
+planning evaluation that enables faster iteration over model variants and planning hyperparameters. We
+evaluate on the same 10 pick-&-place tasks used in the interactive experiments, with manually defined subgoals
+corresponding to the grasp point. Expert actions are defined as the robot’s delta pose from the initial
+observation to the subgoal,˜a1, and from the subgoal to the goal,˜a2. Conditioned on the initial and goal
+observations, the hierarchical planner produces a sequence of subgoals along with a sequence of primitive
+actions( a∗
+1:h)toward the first subgoal. To assess high-level planning quality, we compare the aggregate inferred
+actionPh
+i=1 a∗
+i with the expert action˜a1 using cosine similarity andℓ1 distance. High cosine similarity or low
+ℓ1 distance indicates that the planner has identified a plan that moves toward the non-greedy subgoal, which
+strongly correlates with real-world task success.
+J Baselines
+J.1 Vision-Language-Action Models
+For our baselines, we reproduce the same setup as in the Droid platform. Specifically, we use a Franka Panda
+arm with a bi-finger Robotiq gripper, dual camera setup (one wrist camera plus one side camera looking at
+the robot from the left). Our wrist camera setup is identical to Droid (the same mount and model - ZED
+Mini), however, for the side camera, we use Intel RealSense. While RealSense has a different aspect ratio (4:3
+instead of ZED Mini’s 16:9) we found that simply padding the side image to get 16:9 aspect ratio yields good
+success rate for VLAs trained on Droid with this aspect ratio. Note that we use the same RealSense side
+camera for all baselines and world model-based agents; therefore, they all have access to the same amount of
+sensor signal from the side view. In fact, theπ- family of models receive extra sensor information since they
+have access to wrist camera which is not used by Octo and world model-based agents.
+π0-FAST-DROID andπ0.5-DROID[ 42, 26]. For reliable control with theπx-DROID model family, we reproduce
+the same controller on our Franka as in the Droid benchmark. Both models use one side camera and one wrist
+camera and output chunks of actions being joint velocities and target gripper positions. For both models, we
+execute the entire chunk of outputted actions before re-querying the policy (15actions forπ0.5 and8actions
+for π0-FAST). We run both policies for300total actions, as we found this to be enough for a successful task
+attempt with room for suboptimality. We do not finetune these policies; therefore, the evaluation is zero-shot
+and out-of-distribution since they are only finetuned on Droid, so our scene is new to both of them.
+Since π- models use text goal specification, we tuned text prompts to achieve the highest success rate. We
+arrived at the same conclusions as in the RoboArena [2] benchmark, specifically,π- models do not understand
+colors and complex nouns for shapes (e.g. platform, shelf etc) and each prompt has to be written in a short
+and a simple way. Below are the prompts we tried (either “cup” or only “box” is present in the prompt):
+1. “put the cup on the plane”
+2. “put the cup (box) on the platform”
+3. “put the cup (box) on the table” – the model was picking the object up and putting it in the same
+position since the “ground level” surface is a table despite a small table was in front of it (See Figure 11).
+4. “put the cup (box) on the yellow table” – same as 2.
+5. “put the cup on the wooden table” – same as 2.
+6. “put the cup on the shelf” – the policy tried to place the object on the shelf in the background.
+7. “put the cup on the plate” – this prompt worked. Since it requires a plate, we started to use one as
+the marker for the goal position for the object placement.We believe this makes language goals a good
+substitution for image goals as the plate position unambiguously informs the model where the object
+should be placed and the plate is present in many training episodes.
+28
+
+===== PAGE 29 =====
+We runπ0.5-DROID for100trials for the pick-&-place task with the cup and the pick-&-place task with the
+box. We use the same 10 task configurations as the ones present in Figure 11 to ensure fair comparison. This
+means we run 10 trials for each configuration which gives a low variance for the policy with highly stochastic
+outputs. Similarly, we run100trials for the pick-&-place task with the cup and50trials for the pick-&-place
+task with the box (i.e. 5 trials per configuration).
+Similarly to the evaluation of the world models and policies, we use binary success rate for evaluations. In
+particular, we simply give the policy a score of 1 if the object was placed in the target position and zero
+otherwise. Unfortunately, we were unable to run drawer tasks withπ- models because during our evaluation
+of the drawer task with Octo, the drawer was physically destroyed by the robot into a non-operating state.
+Note that because their language goals can only specify primitive instructions,π- models cannot run the task
+with subgoals.
+Octo[ 51]. We use the same setup for Octo as in the V-JEPA 2 paper. Specifically, we use the Octo-base
+policy finetuned on Droid with image goals. We used the same scoring as for theπ- models. Note that Octo
+is not able to work well without subgoals, so we found its performance without subgoals to be 0.
+J.2 Goal-Conditioned & Zero-Shot RL Methods
+GCIQL HIQL HILP
+lr expectile rand goalp lr expectile rand goalpalpha lr expectile
+Push-T(d= 25) 3e−50.6 0.0 3e−50.9 0.0 3.0 3e−50.6
+Push-T(d= 50) 3e−50.6 0.3 3e−50.9 0.3 1.0 3e−50.6
+Push-T(d= 75) 3e−50.9 0.6 3e−50.9 0.3 1.0 3e−50.6
+Maze(D∈[5,8]) 3e−50.8 0.0 3e−50.6 0.3 1.0 3e−50.9
+Maze(D∈[9,12]) 3e−50.6 0.3 3e−50.8 0.6 3.0 3e−50.9
+Maze(D∈[13,16]) 1e−40.6 0.0 3e−50.8 0.6 3.0 3e−50.9
+Table 18 Hyperparameters.Hyperparameters used for GCIQL, HIQL, and HILP on the Push-T and Diverse Maze tasks.
+GCIQL[ 39] – goal-conditioned version of Implicit Q-Learning [30], a strong and widely-used method for offline
+RL.
+HIQL[ 39] – a hierarchical GCRL method which trains two policies: one to generate subgoals, and another one
+to reach the subgoals. Notably, both policies use the same value function.
+HILP[ 41] – a method that learns state representations from the offline data such that the distance in the
+learned representation space is proportional to the number of steps between two states. A direction-conditioned
+policy is then learned to be able to move along any specified direction in the latent space.
+For GCIQL and HIQL, we use the implementations from the repository1 of OGBench [40]. Likewise, for HILP
+we use the official implementation2 from its authors. For Push-T and Diverse Maze, we tune hyperparameters
+independently for each difficulty setting and report results using the optimal configurations. The selected
+hyperparameters are reported in table 18; all other hyperparameters not listed in the table use the default
+values from the original repositories.
+1https://github.com/seohongpark/ogbench
+2https://github.com/seohongpark/HILP
+29
