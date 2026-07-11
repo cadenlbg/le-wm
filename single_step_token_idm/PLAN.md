@@ -254,8 +254,9 @@ $$
 功能：
 
 - 加载训练好的 checkpoint
-- 在 embedding 数据集上评估
+- 在预提取的 embedding 数据集上做离线 validation
 - 输出 CE / L1 / token accuracy
+- 不运行环境，也不代表最终的任务成功率
 
 主要参数：
 
@@ -263,6 +264,54 @@ $$
 - `--checkpoint`
 - `--batch-size`
 - `--device`
+
+---
+
+### 3.7 `eval_rollout.py`
+
+功能：
+
+- 在真实环境中进行闭环评估
+- 与 GC-IDM 使用相同的 episode 起点、目标帧和 `World.evaluate()` 流程
+- 每一步在线编码当前观测，并缓存固定目标的 LeWM embedding
+- 将 token logits 解码为连续动作并执行到环境中
+- 输出 success metrics、每个 episode 的总耗时和每步 policy 耗时
+
+闭环执行过程为：
+
+$$
+z_t=E(o_t),\qquad z_g=E(o_g)
+$$
+
+$$
+p_t=\pi_\theta(z_t,z_g,\Delta t),\qquad
+b_t=\arg\max_b p_t(b)
+$$
+
+$$
+a_t=\operatorname{Detokenize}(b_t),\qquad
+o_{t+1}=\operatorname{EnvStep}(a_t)
+$$
+
+其中 horizon 条件与 GC-IDM eval 对齐：
+
+$$
+\Delta t=\min(B-t,H_{\max})
+$$
+
+主要参数：
+
+- `--dataset`: `pusht` / `tworoom` / `cube` / `reacher`
+- `--idm`: token IDM checkpoint
+- `--checkpoint`: frozen LeWM checkpoint；不传时从 `STABLEWM_HOME` 推导
+- `--num-eval`: 并行评估 episode 数
+- `--goal-offset`: 数据集中目标帧相对起点的距离
+- `--eval-budget`: 闭环最多执行步数
+- `--train-split` / `--split-seed`: episode holdout 配置；新 checkpoint 会自动读取训练值
+- `--sample`: 从 categorical distribution 采样；默认使用 argmax
+- `--temperature`: 采样温度
+- `--no-goal-cache`: 每一步重新编码目标图像
+- `--dataset-name-override`: 覆盖 stable-worldmodel dataset 名称
 
 ---
 
@@ -374,7 +423,43 @@ python -m single_step_token_idm.eval \
   --device cuda:0
 ```
 
-### 4.6 建议用 tmux 跑长实验
+这个命令只作为离线 validation，不是最终的环境控制结果。
+
+### 4.6 真实环境闭环评估
+
+PushT 的最终评估使用：
+
+```bash
+python -m single_step_token_idm.eval_rollout \
+  --dataset pusht \
+  --idm /data/zflin/lewm_re/experiments/single_step_token_idm/token_idm.pt \
+  --checkpoint /data/zflin/lewm_re/checkpoints/pusht/lewm \
+  --num-eval 50 \
+  --goal-offset 25 \
+  --eval-budget 50 \
+  --device cuda:0
+```
+
+新 checkpoint 会保存并自动读取 `train_split` 与 `split_seed`，因此闭环评估会使用与训练一致的 holdout episodes。对于修改前生成的旧 checkpoint，需要显式追加：
+
+```bash
+  --train-split 0.9 \
+  --split-seed 42
+```
+
+默认使用 argmax token。若要评估 categorical sampling：
+
+```bash
+python -m single_step_token_idm.eval_rollout \
+  --dataset pusht \
+  --idm /data/zflin/lewm_re/experiments/single_step_token_idm/token_idm.pt \
+  --checkpoint /data/zflin/lewm_re/checkpoints/pusht/lewm \
+  --sample \
+  --temperature 1.0 \
+  --device cuda:0
+```
+
+### 4.7 建议用 tmux 跑长实验
 
 ```bash
 tmux new -s token-idm

@@ -42,11 +42,16 @@ class ActionStats:
 def compute_action_stats(actions: np.ndarray, use_q99: bool = True) -> ActionStats:
     """Compute action bounds from a raw action array."""
     actions = np.asarray(actions, dtype=np.float32)
-    action_min = np.min(actions, axis=0)
-    action_max = np.max(actions, axis=0)
-    action_q01 = np.quantile(actions, 0.01, axis=0) if use_q99 else None
-    action_q99 = np.quantile(actions, 0.99, axis=0) if use_q99 else None
-    action_mask = ~np.isnan(actions).any(axis=0)
+    valid_rows = np.isfinite(actions).all(axis=1)
+    if not np.any(valid_rows):
+        raise ValueError("No finite action rows available for tokenizer statistics.")
+
+    finite_actions = actions[valid_rows]
+    action_min = np.min(finite_actions, axis=0)
+    action_max = np.max(finite_actions, axis=0)
+    action_q01 = np.quantile(finite_actions, 0.01, axis=0) if use_q99 else None
+    action_q99 = np.quantile(finite_actions, 0.99, axis=0) if use_q99 else None
+    action_mask = np.isfinite(finite_actions).all(axis=0)
     return ActionStats(
         action_min=action_min,
         action_max=action_max,
@@ -172,4 +177,3 @@ class ActionTokenizer:
         low = low.view(1, -1)
         high = high.view(1, -1)
         return 0.5 * (normalized + 1.0) * (high - low + self.eps) + low
-

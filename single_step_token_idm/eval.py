@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Evaluate a trained single-step token IDM on an embedding dataset."""
+"""Offline validation of a token IDM on precomputed LeWM embeddings.
+
+Use ``eval_rollout.py`` for the final closed-loop environment evaluation.
+"""
 
 from __future__ import annotations
 
@@ -66,4 +69,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

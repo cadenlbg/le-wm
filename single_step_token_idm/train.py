@@ -225,6 +225,10 @@ def main() -> None:
                     "config": asdict(cfg),
                     "tokenizer": tokenizer.to_dict(),
                     "best_val_ce": best_val,
+                    "train_split": args.train_split,
+                    "split_seed": args.split_seed,
+                    "split_partition": args.split_partition,
+                    "held_out_episodes": dataset.held_out_episodes,
                 },
                 args.output,
             )
