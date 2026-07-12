@@ -9,6 +9,7 @@ import json
 import os
 import sys
 from dataclasses import asdict
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -75,6 +76,76 @@ def evaluate(model, loader, tokenizer, l1_coef: float, entropy_coef: float, devi
     }
 
 
+def build_scheduler(optimizer, scheduler_type: str, epochs: int, warmup_epochs: int, min_lr: float):
+    """Build an epoch-level warmup followed by constant or cosine scheduling."""
+    if warmup_epochs == 0:
+        if scheduler_type == "constant":
+            return torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.0)
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=max(1, epochs), eta_min=min_lr
+        )
+
+    warmup = torch.optim.lr_scheduler.LinearLR(
+        optimizer,
+        start_factor=1.0 / warmup_epochs,
+        end_factor=1.0,
+        total_iters=warmup_epochs,
+    )
+    if scheduler_type == "constant":
+        main = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.0)
+    else:
+        main = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=max(1, epochs - warmup_epochs),
+            eta_min=min_lr,
+        )
+    return torch.optim.lr_scheduler.SequentialLR(
+        optimizer,
+        schedulers=[warmup, main],
+        milestones=[warmup_epochs],
+    )
+
+
+def checkpoint_path(output: str, suffix: str) -> str:
+    path = Path(output)
+    return str(path.with_name(f"{path.stem}_{suffix}{path.suffix or '.pt'}"))
+
+
+def build_checkpoint(
+    model,
+    optimizer,
+    scheduler,
+    cfg,
+    tokenizer,
+    args,
+    dataset,
+    epoch: int,
+    best_val: float,
+    train_metrics: dict[str, float],
+    val_metrics: dict[str, float],
+) -> dict:
+    return {
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
+        "config": asdict(cfg),
+        "tokenizer": tokenizer.to_dict(),
+        "epoch": epoch,
+        "best_val_ce": best_val,
+        "train_metrics": train_metrics,
+        "val_metrics": val_metrics,
+        "train_split": args.train_split,
+        "split_seed": args.split_seed,
+        "split_partition": args.split_partition,
+        "held_out_episodes": dataset.held_out_episodes,
+        "init_checkpoint": args.init_checkpoint,
+        "scheduler": args.scheduler,
+        "warmup_epochs": args.warmup_epochs,
+        "lr": args.lr,
+        "min_lr": args.min_lr,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train single-step token IDM")
     parser.add_argument("--embeddings", required=True)
@@ -87,6 +158,9 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--min-lr", type=float, default=None)
+    parser.add_argument("--scheduler", choices=["cosine", "constant"], default="cosine")
+    parser.add_argument("--warmup-epochs", type=int, default=0)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--hidden-dim", type=int, default=512)
     parser.add_argument("--n-layers", type=int, default=3)
@@ -98,6 +172,8 @@ def main() -> None:
     parser.add_argument("--l1-coef", type=float, default=0.1)
     parser.add_argument("--entropy-coef", type=float, default=0.0)
     parser.add_argument("--noise-sigma", type=float, default=0.0)
+    parser.add_argument("--init-checkpoint", default=None, help="Warm-start model weights from a token IDM checkpoint")
+    parser.add_argument("--checkpoint-every", type=int, default=10)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--no-wandb", action="store_true", help="Disable Weights & Biases logging")
     parser.add_argument("--wandb-project", default="single-step-token-idm")
@@ -107,6 +183,17 @@ def main() -> None:
     parser.add_argument("--wandb-tags", nargs="*", default=None)
     parser.add_argument("--wandb-log-artifact", action="store_true", help="Upload the best checkpoint as a wandb artifact")
     args = parser.parse_args()
+
+    if args.epochs < 1 or args.checkpoint_every < 1:
+        parser.error("--epochs and --checkpoint-every must be positive")
+    if args.warmup_epochs < 0 or args.warmup_epochs >= args.epochs:
+        parser.error("--warmup-epochs must be in [0, epochs)")
+    if args.lr <= 0:
+        parser.error("--lr must be positive")
+    if args.min_lr is None:
+        args.min_lr = args.lr / 100
+    if args.min_lr < 0 or args.min_lr > args.lr:
+        parser.error("--min-lr must be in [0, lr]")
 
     device = torch.device(args.device)
     dataset = TransitionEmbeddingDataset(
@@ -142,8 +229,28 @@ def main() -> None:
         max_horizon=args.max_goal_horizon,
     )
     model = GoalConditionedTokenIDM(cfg).to(device)
+    if args.init_checkpoint is not None:
+        init_data = torch.load(args.init_checkpoint, map_location=device, weights_only=False)
+        saved_cfg = TokenIDMConfig(**init_data["config"])
+        saved_tokenizer = ActionTokenizer.from_dict(init_data["tokenizer"])
+        if asdict(saved_cfg) != asdict(cfg):
+            raise ValueError(
+                "--init-checkpoint model config does not match this run: "
+                f"saved={asdict(saved_cfg)}, current={asdict(cfg)}"
+            )
+        if saved_tokenizer.to_dict() != tokenizer.to_dict():
+            raise ValueError("--init-checkpoint tokenizer does not match this run")
+        model.load_state_dict(init_data["model_state_dict"], strict=True)
+        print(f"Warm-started model weights from {args.init_checkpoint}")
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr / 100)
+    scheduler = build_scheduler(
+        optimizer,
+        scheduler_type=args.scheduler,
+        epochs=args.epochs,
+        warmup_epochs=args.warmup_epochs,
+        min_lr=args.min_lr,
+    )
 
     history = {"train": [], "val": [], "config": asdict(cfg), "tokenizer": tokenizer.to_dict()}
     best_val = float("inf")
@@ -176,6 +283,7 @@ def main() -> None:
 
     for epoch in range(args.epochs):
         model.train()
+        epoch_lr = float(optimizer.param_groups[0]["lr"])
         train_losses = []
         train_ce_vals, train_l1_vals, train_ent_vals = [], [], []
         for batch in train_loader:
@@ -202,7 +310,6 @@ def main() -> None:
             train_l1_vals.append(float(l1.item()))
             train_ent_vals.append(float(ent.item()))
 
-        scheduler.step()
         val_metrics = evaluate(model, val_loader, tokenizer, args.l1_coef, args.entropy_coef, device)
         train_loss = float(np.mean(train_losses))
         train_metrics = {
@@ -211,7 +318,7 @@ def main() -> None:
             "ce": float(np.mean(train_ce_vals)),
             "l1": float(np.mean(train_l1_vals)),
             "entropy": float(np.mean(train_ent_vals)),
-            "lr": float(scheduler.get_last_lr()[0]),
+            "lr": epoch_lr,
         }
         history["train"].append(train_metrics)
         history["val"].append({"epoch": epoch, **val_metrics})
@@ -219,19 +326,32 @@ def main() -> None:
         if val_metrics["ce"] < best_val:
             best_val = val_metrics["ce"]
             is_best = True
+        scheduler.step()
+        checkpoint = build_checkpoint(
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            cfg=cfg,
+            tokenizer=tokenizer,
+            args=args,
+            dataset=dataset,
+            epoch=epoch + 1,
+            best_val=best_val,
+            train_metrics=train_metrics,
+            val_metrics=val_metrics,
+        )
+        if is_best:
+            torch.save(checkpoint, args.output)
+        if (epoch + 1) % args.checkpoint_every == 0:
             torch.save(
-                {
-                    "model_state_dict": model.state_dict(),
-                    "config": asdict(cfg),
-                    "tokenizer": tokenizer.to_dict(),
-                    "best_val_ce": best_val,
-                    "train_split": args.train_split,
-                    "split_seed": args.split_seed,
-                    "split_partition": args.split_partition,
-                    "held_out_episodes": dataset.held_out_episodes,
-                },
-                args.output,
+                checkpoint,
+                checkpoint_path(args.output, f"epoch_{epoch + 1:04d}"),
             )
+        torch.save(checkpoint, checkpoint_path(args.output, "last"))
+
+        history_path = args.output.replace(".pt", "_history.json")
+        with open(history_path, "w", encoding="utf-8") as f:
+            json.dump(history, f, indent=2, ensure_ascii=False)
         if wandb_run is not None:
             wandb_run.log(
                 {
@@ -255,9 +375,6 @@ def main() -> None:
                 f"train={train_loss:.6f} val_ce={val_metrics['ce']:.6f} "
                 f"val_l1={val_metrics['l1']:.6f} acc={val_metrics['token_acc']:.4f}"
             )
-
-    with open(args.output.replace(".pt", "_history.json"), "w", encoding="utf-8") as f:
-        json.dump(history, f, indent=2, ensure_ascii=False)
 
     if wandb_run is not None:
         if args.wandb_log_artifact and os.path.exists(args.output):
