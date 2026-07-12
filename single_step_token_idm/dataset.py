@@ -21,10 +21,66 @@ from torch.utils.data import Dataset
 from .tokenization import ActionStats, ActionTokenizer, ActionTokenizerConfig, compute_action_stats
 
 
-def load_lewm_model(checkpoint_path: str, device: str = "cpu") -> torch.nn.Module:
-    """Load a LeWM checkpoint in the same formats used by GC-IDM."""
+_STATE_DICT_PREFIXES = ("module.", "model.", "world_model.")
+
+
+def _extract_state_dict(payload) -> dict[str, torch.Tensor]:
+    """Extract a tensor state dict from common checkpoint wrappers."""
+    if not isinstance(payload, dict):
+        raise TypeError(f"Expected a state dict payload, got {type(payload).__name__}")
+    for key in ("state_dict", "model_state_dict", "model", "module", "weights"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            return value
+    return payload
+
+
+def _translate_lewm_state_dict(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Translate legacy Hugging Face ViT parameter names to current LeWM names."""
+    translated = {}
+    for key, tensor in state_dict.items():
+        new_key = key
+        prefix_removed = True
+        while prefix_removed:
+            prefix_removed = False
+            for prefix in _STATE_DICT_PREFIXES:
+                if new_key.startswith(prefix):
+                    new_key = new_key[len(prefix) :]
+                    prefix_removed = True
+                    break
+
+        if "encoder.encoder.layer." in new_key:
+            new_key = new_key.replace("encoder.encoder.layer.", "encoder.layers.")
+            new_key = new_key.replace("attention.attention.query", "attention.q_proj")
+            new_key = new_key.replace("attention.attention.key", "attention.k_proj")
+            new_key = new_key.replace("attention.attention.value", "attention.v_proj")
+            new_key = new_key.replace("attention.output.dense", "attention.o_proj")
+            new_key = new_key.replace("intermediate.dense", "mlp.fc1")
+            new_key = new_key.replace("output.dense", "mlp.fc2")
+
+        if new_key in translated:
+            raise KeyError(f"State-dict translation produced duplicate key {new_key!r}")
+        translated[new_key] = tensor
+    return translated
+
+
+def _load_config_weights(cfg_file: str | Path, wts_file: str | Path, device: str) -> torch.nn.Module:
+    """Instantiate a LeWM config and strictly load compatible HF weights."""
     from hydra.utils import instantiate
 
+    with open(cfg_file, "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+    model = instantiate(cfg)
+    payload = torch.load(str(wts_file), map_location="cpu", weights_only=False)
+    state_dict = _translate_lewm_state_dict(_extract_state_dict(payload))
+    model.load_state_dict(state_dict, strict=True)
+    model.eval()
+    model.to(device)
+    return model
+
+
+def load_lewm_model(checkpoint_path: str, device: str = "cpu") -> torch.nn.Module:
+    """Load a LeWM checkpoint in the same formats used by GC-IDM."""
     path = Path(checkpoint_path)
 
     if path.is_file() and path.suffix == ".ckpt":
@@ -36,14 +92,7 @@ def load_lewm_model(checkpoint_path: str, device: str = "cpu") -> torch.nn.Modul
         cfg_file = path / "config.json"
         wts_file = path / "weights.pt"
         if cfg_file.exists() and wts_file.exists():
-            with open(cfg_file, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-            model = instantiate(cfg)
-            state_dict = torch.load(str(wts_file), map_location=device, weights_only=True)
-            model.load_state_dict(state_dict)
-            model.eval()
-            model.to(device)
-            return model
+            return _load_config_weights(cfg_file, wts_file, device)
 
         ckpts = sorted(path.glob("*_object.ckpt"))
         if ckpts:
@@ -56,14 +105,7 @@ def load_lewm_model(checkpoint_path: str, device: str = "cpu") -> torch.nn.Modul
 
         cfg_file = hf_hub_download(checkpoint_path, "config.json")
         wts_file = hf_hub_download(checkpoint_path, "weights.pt")
-        with open(cfg_file, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-        model = instantiate(cfg)
-        state_dict = torch.load(wts_file, map_location=device, weights_only=True)
-        model.load_state_dict(state_dict)
-        model.eval()
-        model.to(device)
-        return model
+        return _load_config_weights(cfg_file, wts_file, device)
 
     raise FileNotFoundError(f"Cannot load LeWM checkpoint from {checkpoint_path!r}")
 
