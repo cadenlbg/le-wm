@@ -1,4 +1,0 @@
-[2026-07-05 20:46:19,831][datasets][INFO] - JAX version 0.6.2 available.
-[2026-07-05 20:46:30,681][root][INFO] - Cached 'action' from '/data/zflin/lewm_re/stablewm_data/datasets/pusht_expert_train.h5'
-[2026-07-05 20:46:30,745][root][INFO] - Cached 'proprio' from '/data/zflin/lewm_re/stablewm_data/datasets/pusht_expert_train.h5'
-[2026-07-05 20:46:30,820][root][INFO] - Cached 'state' from '/data/zflin/lewm_re/stablewm_data/datasets/pusht_expert_train.h5'
